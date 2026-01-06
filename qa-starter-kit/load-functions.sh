@@ -712,12 +712,176 @@ jira-worked-90days() {
   echo "---"
 }
 
+jira-triage() {
+  local ticket=$1
+  echo "=== Ticket Triage: $ticket ==="
+  echo ""
+
+  # Check if ANTHROPIC_API_KEY is set
+  if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo "❌ Error: ANTHROPIC_API_KEY environment variable not set"
+    echo "   Set it with: export ANTHROPIC_API_KEY='your-api-key'"
+    echo ""
+    return 1
+  fi
+
+  # Find the EEN-Master-Technical-Reference.md file
+  local reference_doc=""
+  local search_paths=(
+    "/Users/adamgarcia/agarcia-test-tools/EEN-Master-Technical-Reference.md"
+    "$HOME/agarcia-test-tools/EEN-Master-Technical-Reference.md"
+    "$HOME/test-tools/EEN-Master-Technical-Reference.md"
+    "$(pwd)/EEN-Master-Technical-Reference.md"
+    "$(dirname "$SCRIPT_DIR")/EEN-Master-Technical-Reference.md"
+  )
+
+  for path in "${search_paths[@]}"; do
+    if [ -f "$path" ]; then
+      reference_doc="$path"
+      break
+    fi
+  done
+
+  if [ -z "$reference_doc" ]; then
+    echo "❌ Error: Could not find EEN-Master-Technical-Reference.md"
+    echo "   Searched in:"
+    for path in "${search_paths[@]}"; do
+      echo "   - $path"
+    done
+    echo ""
+    return 1
+  fi
+
+  echo "📚 Using reference doc: $reference_doc"
+  echo ""
+
+  # Get full ticket details
+  echo "📥 Fetching ticket details..."
+  local response=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+    -X GET "${JIRA_URL}/rest/api/3/issue/${ticket}?fields=summary,description,issuetype,status,priority,reporter,assignee,created,updated,labels,components,comment")
+
+  # Check if ticket exists
+  if echo "$response" | jq -e '.errorMessages' >/dev/null 2>&1; then
+    echo "❌ Error fetching ticket: $(echo "$response" | jq -r '.errorMessages[0]')"
+    return 1
+  fi
+
+  # Basic info
+  echo "$response" | jq -r '"📋 Ticket Info
+Key: \(.key)
+Summary: \(.fields.summary)
+Type: \(.fields.issuetype.name)
+Status: \(.fields.status.name)
+Priority: \(.fields.priority.name)
+Reporter: \(.fields.reporter.displayName)
+Assignee: \(.fields.assignee.displayName // "Unassigned")
+Labels: \([.fields.labels[]?] | join(", "))
+Components: \([.fields.components[]?.name] | join(", "))"'
+  echo ""
+
+  # Prepare ticket data for Claude
+  local ticket_text=$(echo "$response" | jq -r '
+    "Key: " + .key + "\n" +
+    "Summary: " + .fields.summary + "\n" +
+    "Type: " + .fields.issuetype.name + "\n" +
+    "Status: " + .fields.status.name + "\n" +
+    "Priority: " + .fields.priority.name + "\n" +
+    "Reporter: " + .fields.reporter.displayName + "\n" +
+    "Assignee: " + (.fields.assignee.displayName // "Unassigned") + "\n" +
+    "Labels: " + ([.fields.labels[]?] | join(", ")) + "\n" +
+    "Components: " + ([.fields.components[]?.name] | join(", ")) + "\n" +
+    "\nDescription:\n" + ([.fields.description.content[]?.content[]?.text] | join("\n")) + "\n" +
+    (if (.fields.comment.comments | length) > 0 then "\nRecent Comments:\n" + ([.fields.comment.comments[-5:] | reverse[] | "- " + .author.displayName + " (" + .created[:10] + "): " + ([.body.content[]?.content[]?.text] | join(" "))] | join("\n")) + "\n" else "" end)
+  ')
+
+  # Read reference documentation (entire file - within Claude's context limits)
+  echo "🔍 Analyzing with technical reference documentation..."
+  local reference_content=$(cat "$reference_doc")
+
+  # Create Claude API request
+  local temp_file=$(mktemp)
+  local prompt="You are a senior technical support engineer at Eagle Eye Networks specializing in triaging customer issues.
+
+You have access to the complete Eagle Eye Networks Technical Reference Guide which contains troubleshooting procedures, commands, diagnostic tools, and known issues.
+
+Your task is to analyze the Jira ticket below and provide actionable triage guidance.
+
+TICKET INFORMATION:
+${ticket_text}
+
+TECHNICAL REFERENCE DOCUMENTATION:
+${reference_content}
+
+Based on the ticket information and the technical reference guide, provide:
+
+1. **ISSUE CATEGORY** - Identify what type of issue this is (Bridge, Camera, Network, RAID, Video Playback, Archiver, LPR, etc.)
+
+2. **INITIAL ASSESSMENT** - What is likely happening based on the symptoms?
+
+3. **DIAGNOSTIC COMMANDS** - Specific commands from the reference guide to run first (provide exact command syntax)
+
+4. **WHAT TO CHECK** - Step-by-step checklist of things to investigate, referencing specific sections of the technical guide
+
+5. **LIKELY ROOT CAUSES** - Most probable causes based on symptoms and past patterns
+
+6. **RELEVANT DOCUMENTATION** - Which sections of the technical reference guide are most relevant (reference by section name)
+
+7. **ESCALATION CRITERIA** - When should this be escalated vs handled directly?
+
+Format your response clearly with headers and bullet points. Focus on actionable, specific guidance."
+
+  # Use jq to properly escape the content
+  jq -n --arg prompt "$prompt" '{
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 4000,
+    messages: [{
+      role: "user",
+      content: $prompt
+    }]
+  }' > "$temp_file"
+
+  # Make API request
+  local claude_response=$(curl -s https://api.anthropic.com/v1/messages \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: $ANTHROPIC_API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -d @"$temp_file")
+
+  # Clean up temp file
+  rm -f "$temp_file"
+
+  # Extract and display Claude's triage guidance
+  local triage_guidance=$(echo "$claude_response" | jq -r '.content[0].text' 2>/dev/null)
+
+  if [ -z "$triage_guidance" ] || [ "$triage_guidance" = "null" ]; then
+    # Check for API error
+    local error_msg=$(echo "$claude_response" | jq -r '.error.message' 2>/dev/null)
+    if [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
+      echo "❌ API Error: $error_msg"
+    else
+      echo "❌ Could not generate triage guidance (check API key or rate limits)"
+    fi
+    return 1
+  fi
+
+  echo "🎯 TRIAGE GUIDANCE:"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "$triage_guidance"
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "✅ Triage complete for $ticket"
+  echo ""
+}
+
 echo "✓ Jira helper functions loaded!"
 echo ""
 echo "Available commands:"
 echo "  jira-my-tickets              - Show your open tickets"
 echo "  jira-get TICKET-ID           - Get ticket details"
 echo "  jira-summary TICKET-ID       - Get detailed summary with parent/child/related tickets"
+echo "  jira-triage TICKET-ID        - Get AI-powered triage guidance using EEN technical reference"
 echo "  jira-comment TICKET-ID 'msg' - Add comment"
 echo "  jira-bugs-filed-90days       - Bugs filed in last 90 days"
 echo "  jira-created-90days          - All tickets created in last 90 days"

@@ -1,0 +1,28 @@
+# Claude development context (local only)
+.claude-context.md
+
+# Personal info checker script (contains patterns to search for)
+check-personal-info.sh
+
+# Credentials (NEVER commit these!)
+credentials.sh
+
+# Ignore local test files and personal notes
+*.json
+*.txt
+my-*.md
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ignore temporary files
+/tmp/
+temp/
