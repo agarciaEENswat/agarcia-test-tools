@@ -402,6 +402,25 @@ uptime
 
 # Detailed uptime check
 echo -n "Uptime: "; uptime | awk '{$1=$1;print}'
+
+# Check uptime from /proc
+cat /proc/uptime
+```
+
+**GPU Hang Detection (for LPR/Analytics Issues):**
+```bash
+# Check for GPU hang messages (i915 driver)
+dmesg | tail -100 | grep -i "gpu hang"
+
+# Example output indicating GPU hang:
+# [2339835.276735] i915 0000:00:02.0: [drm] anpr_detector[1530821] context reset due to GPU hang
+# [2339835.284359] i915 0000:00:02.0: [drm] GPU HANG: ecode 11:1:8ed9fff3, in anpr_detector [1530821]
+
+# Check dmesg for all GPU-related errors
+dmesg | grep -i "i915\|gpu\|drm"
+
+# If GPU hangs are detected, this can cause bridge crashes/reboots
+# Resolution: Restart LPR container or update to newer version
 ```
 
 ---
@@ -611,6 +630,22 @@ python -m json.tool /opt/een/var/log/bridge/purge.json
 
 # ZMQ retention settings
 python3 ./getSettings.py -e <ESN> | grep -E -A 3 "retention|target|purge" | jq '.. | objects | select(has("retention") or has("purge") or has("target"))'
+```
+
+### Real-time Preview Monitoring (Websocket)
+
+**Websocket polling for live previews:**
+```bash
+# Access websocket polling interface
+http://100fb653.a.plumv.com:28080/ws_poll3.html
+
+# Payload to monitor camera events and images:
+{ "cameras": { "100fb653": { "resource" : [ "event","image"] }}}
+
+# This allows real-time monitoring of:
+# - Preview image generation
+# - Event generation
+# - Camera connection status
 ```
 
 ---
@@ -1448,8 +1483,19 @@ https://login.eagleeyenetworks.com/asset/play/video.flv?id=<ESN>&start_timestamp
 
 **Archiver Direct Download:**
 ```bash
-# Direct from archiver (port 28080)
-https://archiver.eagleeyenetworks.com:28080/<ESN>/video.mp4?start_timestamp=<YYYYMMDDHHMMSS.sss>&end_timestamp=<YYYYMMDDHHMMSS.sss>&coalesce=1
+# Direct from archiver (port 28080) - FLV with coalesce
+http://{archiver}.eagleeyenetworks.com:28080/asset/play/video.flv?id={esn}&start_timestamp={start}&end_timestamp={end}&options=coalesce
+
+# Manual timestamp review (video.html)
+http://{archiver}.eagleeyenetworks.com:28080/video.html?c={esn}
+
+# Download with OSD timestamps (On-Screen Display with timezone)
+https://login.eagleeyenetworks.com/asset/play/video.flv?id=<camera_ESN>&start_timestamp=<start_time_UTC>&end_timestamp=<end_time_UTC>&osd=<timezone>
+
+# Timestamp format examples:
+# start: 20250424103400.000
+# end: 20250424103700.000
+# timezone: America/New_York, UTC, etc.
 ```
 
 **V3 WebApp Downloads:**
@@ -1487,10 +1533,28 @@ ls -la */<ESN>/*
 
 ### Cloud vs Archiver Storage
 
-**Verify where footage is hosted:**
+**Check if footage is in the cloud:**
 ```bash
-# Check if footage is on archiver or in cloud storage
-# Look at archiver inventory
+# Use video.html to verify footage in cloud
+http://<esn>.a.plumv.com:28080/video.html?c=<esn>
+
+# With specific timestamp and count
+http://1001f32f.a.plumv.com:28080/video.html?c=1001f32f&t=20250912120642.898&count=-5
+
+# This will show you if footage is available in cloud storage
+# If you can see video playback, footage is in the cloud
+```
+
+**Check which archivers are being used:**
+```bash
+# From bridge - check transports to archivers
+ipccli --get_transports
+
+# DNS lookup to see which archivers ESN is using
+dig <ESN>.a.plumv.com
+
+# Example:
+dig 100b213b.a.plumv.com
 ```
 
 ### Check for Video Gaps
@@ -1519,13 +1583,9 @@ ls -la */<ESN>/*
 
 ### Check Archiver Connectivity
 
-**From bridge:**
-```bash
-ipccli --get_transports
-
-# Check which archivers ESN is using
-dig <ESN>.a.plumv.com
-```
+**See "Cloud vs Archiver Storage" section above for:**
+- `ipccli --get_transports` - Check bridge transports to archivers
+- `dig <ESN>.a.plumv.com` - DNS lookup for archiver assignment
 
 ### Data Disparity Between Archivers
 
@@ -1533,6 +1593,64 @@ If data on each archiver is not the same:
 1. Run full etag sync first and let it finish
 2. Run "Sync Media" on each archiver, one at a time (lowest first)
 3. Run "Do Command" on each archiver
+
+### Direct Archiver Filesystem Access (Jason Commands)
+
+**Access archiver node directly via kubectl:**
+```bash
+# SSH into archiver node
+kubectl node-shell a3205 --context lon1p1
+
+# Navigate to archiver asset storage
+cd /srv/archiver/var/lib/assets/100fdb20/a
+
+# Check etag synchronization between archivers
+ls | grep ".etag" | wc -l
+
+# View footage files for specific date
+cd /srv/archiver/var/lib/assets/100eb59a/a/2025/08/24
+ls -lh | grep -v "etag"
+ls -lh
+```
+
+**Find archiver pod by name or IP:**
+```bash
+# Find archiver by name
+kubectl get pods --all-namespaces -o wide | grep [archiver_name]
+kubectl get pods --all-namespaces -o wide | grep a1514 | grep archiver
+
+# Find archiver by IP
+kubectl get pods -n default -o wide | grep "136.242.84.32"
+```
+
+**Get archiver logs:**
+```bash
+# Get archiver pod name
+kubectl get pods --all-namespaces | grep archiver | grep [archiver_name]
+
+# Example: archiver-pxwv6
+kubectl cp archiver-pxwv6:/opt/een/var/log/archiver/base/archiver.log ~/Archiver_Logs/a3495.log
+
+# Search logs
+cat ~/Archiver_logs/a3495.log | grep [search_term]
+cat ~/Archiver_logs/a3495.log | grep 1002ed35
+```
+
+### FLV File Corruption Detection
+
+**Check for corrupt FLV files:**
+```bash
+# Hexdump first 50 lines to check FLV header
+hexdump -c 20251004130211.984_h264_high_p0_EVENT.flv | head -50
+
+# Check if valid FLV file (should see 'FLV' tag in white in first 5 characters)
+# Use vim to inspect: vim [filename.flv]
+# Look for 'flv' in white within first five characters
+
+# Grep for FLV tags in file
+grep FLV 20251201143742.000_h264_high.flv
+# Expected output: binary file matches (if valid FLV)
+```
 
 ---
 
@@ -1653,8 +1771,11 @@ grep command /opt/een/var/log/bridge/bridge.log
 docker logs bridge_bridge_1
 docker logs bridge_bridge_1 --tail 100 -f
 
-# With timestamps
+# With timestamps (time-filtered logs)
 docker logs --since="2024-01-01T00:00:00" --until="2024-01-02T00:00:00" bridge_bridge_1
+
+# Time-bounded log extraction (specific time window)
+sudo docker logs bridge-bridge-1 --since "2025-12-22T11:00:00" --until "2025-12-22T11:30:00"
 ```
 
 ### Listener Log (ONVIF)
@@ -2179,13 +2300,39 @@ https://vlogs.eencloud.com/select/vmui/#/?query=((cluster%3A+[cluster])+AND+[key
 
 **Common Container Names:**
 - media-service
+- media-transcoder
 - status-server
-- alertid
+- alertid / alertd
 - operator
 - gateway
 - vms-core-api
 - bridge
 - camera-direct
+- cameraendpoint
+- events3ingress / eventsv3ingress
+- herald / herald-consumer
+- registry
+- videosearchworkers-inference
+- webui-log-collector
+- frontend-gui
+- vms-core-pulsar-consumer
+- vmswebapp
+- event-normalizer
+- ambrose (vehicle lists)
+- oyez-consumer
+- cm-auth
+- virtualdevices-api
+- cm-basurl-v3
+- drivefs-notifier
+- eventsv3alerts
+- eventsv3api
+- events3subscriptions
+- jobs-api
+- b2d2-pulsar-init
+- pos-ingester / pos
+- reports-api
+- user-details
+- videosearch-apis
 
 ### VMetrics
 
@@ -2193,6 +2340,42 @@ https://vlogs.eencloud.com/select/vmui/#/?query=((cluster%3A+[cluster])+AND+[key
 ```bash
 kubernetes.node_labels.pod: "lon1p1" AND kubernetes.container_name:="gateway" AND "00050145"
 kubernetes.pod_labels.app:alertd
+```
+
+### Webhook Event Tracking
+
+**Track webhook delivery:**
+```bash
+# Query for successful webhook deliveries
+kubernetes.pod_labels.app.kubernetes.io/instance:="oyez-consumer" AND log.extra.success:="true" AND log.extra.action_type:="webhook" AND account_id:"00181761"
+
+# Search for failed webhooks
+kubernetes.pod_labels.app.kubernetes.io/instance:="oyez-consumer" AND log.extra.success:="false" AND log.extra.action_type:="webhook"
+```
+
+### Media Transcoder Job Tracking
+
+**Track transcoding jobs:**
+```bash
+# VictoriaLogs query for specific job
+kubernetes.container_name: "media-transcoder" AND (log.extra.jobId: "9e1905bb-8231-4c57-8116-bc81d618407c" OR 9e1905bb-8231-4c57-8116-bc81d618407c)
+
+# Check job status via API
+https://api.c026.eagleeyenetworks.com/api/v3.0/jobs/18a45944-6c63-4004-b33e-9616797bb86a
+```
+
+### Permdocs/Dproxy Access
+
+**Access backend cluster data:**
+```bash
+# Log in via VMS and get authkey (F12 > Application > authkey)
+# Then access permdocs:
+https://dproxy.test.eencloud.com/api/v2/dhash/node/v1/com.eencloud.dhash.cluster:<cluster>:/auth/<authkey>
+
+# Example:
+https://dproxy.test.eencloud.com/api/v2/dhash/node/v1/com.eencloud.dhash.cluster:c007:/auth/d2d5e419bae6bf680016156553b7df2d
+
+# Note: Account number is hexadecimal, Dproxy is decimal
 ```
 
 ### Status Checks
@@ -2255,8 +2438,50 @@ https://api.[cluster].eagleeyenetworks.com/api/v3.0/accounts/[account]/notificat
 
 **Check Jobs:**
 ```bash
-# Jobs API queries for export jobs, transcoding tasks, sub-jobs tracking
-# Accessed via Jobs API endpoints
+# Jobs API endpoint
+https://api.[cluster].eagleeyenetworks.com/api/v3.0/jobs/[jobId]
+
+# Example:
+https://api.c026.eagleeyenetworks.com/api/v3.0/jobs/18a45944-6c63-4004-b33e-9616797bb86a
+```
+
+### Query Sub-Jobs for Exports
+
+**Find all sub-jobs for a parent export job:**
+```bash
+# Using internal API key
+curl -s "https://api.c001.eagleeyenetworks.com/api/v3.0/jobs?userId=ca0603b4&pageSize=500&rootId=e1ba5d29-544b-4389-bf84-6586be85b93d" \
+  -H "X-EEN-Internal-API-Key: 127fbee9-0220-4ef4-88e9-a49057321a0c" | jq
+
+# Parameters:
+# - userId: User who created the job
+# - pageSize: Number of results (default 100, max 500)
+# - rootId: Parent job ID to find all related sub-jobs
+```
+
+### Delete Download Job
+
+**Manually delete stuck download jobs:**
+```bash
+# Step 1: Get the download job from browser
+# - In browser, click on the download
+# - Open Developer Tools (F12) > Network tab
+# - Copy the request as cURL
+
+# Step 2: Extract the job ID from endpoint
+# Endpoint format: /api/v3.0/downloads/<jobID>:download
+# Example: /api/v3.0/downloads/0b02ee17-ef47-4fd1-8632-33bd383ad32a:download
+
+# Step 3: Use Postman or curl to DELETE the job
+# - Paste cURL into Postman as new request
+# - Change method from GET to DELETE
+# - Remove ":download" from the end of the URL
+# - Keep the auth token and base URL
+# - Send the DELETE request
+
+# Example curl:
+curl -X DELETE "https://api.c001.eagleeyenetworks.com/api/v3.0/downloads/0b02ee17-ef47-4fd1-8632-33bd383ad32a" \
+  -H "Authorization: Bearer [token]"
 ```
 
 ---
