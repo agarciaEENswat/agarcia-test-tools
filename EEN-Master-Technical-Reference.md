@@ -54,6 +54,7 @@
 
 8. [Advanced Infrastructure](#8-advanced-infrastructure)
    - [Kubernetes Operations](#kubernetes-operations)
+   - [New Pod Testing & Validation](#new-pod-testing--validation)
    - [Microservices Monitoring](#microservices-monitoring)
    - [Event & Notification Pipeline](#event--notification-pipeline)
    - [Jobs API Tracking](#jobs-api-tracking)
@@ -72,6 +73,7 @@
 
 11. [Quick Reference](#11-quick-reference)
     - [Most-Used Commands](#most-used-commands)
+    - [Conversions & Utilities](#conversions--utilities)
     - [API Endpoints](#api-endpoints)
     - [Camera Tool Status Codes](#camera-tool-status-codes)
     - [Emergency Procedures](#emergency-procedures)
@@ -2275,6 +2277,64 @@ cat fetcher.log | grep <ESN>
 
 ---
 
+## New Pod Testing & Validation
+
+### When to Check New Pod
+
+**Scenarios requiring new pod validation:**
+- New pod/cluster has been deployed
+- Account migration/move to different pod
+- After infrastructure changes or upgrades
+- Troubleshooting pod-specific issues
+- Verifying service availability in new regions
+
+### What Happens When Account is Moved
+
+**When an account is moved to a new pod:**
+- Account data migrated to new cluster
+- Device registrations need validation
+- Service endpoints may change
+- Archiver assignments may update
+- Bridge connections may need re-establishment
+- Need to verify all services operational
+
+### New Pod Testing Documentation
+
+**Complete procedures and validation steps:**
+
+- **New Pod Testing Guide:**
+  https://eagleeyenetworks.atlassian.net/wiki/spaces/ENG/pages/2702147795/New+Pod+Testing
+
+- **Performing New Pod Validations (WIP):**
+  https://eagleeyenetworks.atlassian.net/wiki/spaces/ENG/pages/3555885110/Performing+New+Pod+Validations+-+WIP
+
+**Key validation areas:**
+- Service health checks (status-server, registry, gateway)
+- Archiver connectivity and assignment
+- Video recording and playback
+- Event generation and notification delivery
+- API endpoint functionality
+- Authentication and authorization
+- Bridge connectivity to new pod
+- Camera streaming and preview generation
+
+**Quick validation commands:**
+```bash
+# Check status-server for new pod
+http://status-server.[new_pod].eencloud.com:5001/api/v2/Status?Account_in=[account]&Device_in=[device]
+
+# Check registry for new pod
+https://registry.[new_pod].eencloud.com/api/v2/Search?Include=czts&Device_in=[device]
+
+# Verify archiver assignment
+dig [esn].a.plumv.com
+
+# Check bridge connectivity
+ipccli --get_transports
+```
+
+---
+
 ## Microservices Monitoring
 
 ### VictoriaLogs Queries
@@ -2398,6 +2458,47 @@ https://dproxy.test.eencloud.com/api/v2/dhash/node/v1/com.eencloud.dhash.pod::ac
 # Provisioning for an ESN:
 https://dproxy.test.eencloud.com/api/v2/dhash/node/v1/com.eencloud.dhash.esn:100383c0:provisioning
 ```
+
+### Update Dhash for Missing ESNs
+
+**When ESNs are missing from dhash (VBS status-server pipeline failures):**
+
+**Problem:** ESNs missing from dhash, causing this pipeline to fail:
+```
+https://concourse.eencloud.com/teams/main/pipelines/status-server-qa/jobs/vbs-ss-esn-sync/builds/65
+```
+
+**Solution using Claude Skills:**
+
+**Prerequisites:**
+- Access to Kubernetes
+- Access to status-server repository
+
+**Steps:**
+```bash
+# 1. Clone the repository
+git clone https://github.com/EENCloud/status-server
+cd status-server
+
+# 2. Start Claude session in the directory
+# (Use Claude Code CLI)
+
+# 3. Use the Claude skill to update dhash
+# Format: "update dhash for <pod> and esn <ESN>"
+# Example:
+"update dhash for aus1p1 and esn 10000678"
+
+# The skill will automatically update dhash with the ESN
+```
+
+**Pod names (clusters):**
+- aus1p1, fra1p2, lon1p1, etc.
+
+**Reference:**
+- Skill documentation: https://github.com/EENCloud/status-server/blob/master/.claude/skills/update-dhash-keys/SKILL.md
+- Repository: https://github.com/EENCloud/status-server/tree/master
+
+**Note:** This is an automated fix using Claude skills. The skill handles the dhash update operations via Kubernetes.
 
 ---
 
@@ -3064,6 +3165,29 @@ df -h /opt/een/data
 # Storage by camera
 cd /opt/een/data/bridge/assets && ls */*/*
 ```
+
+### Conversions & Utilities
+
+```bash
+# ESN to int (for camera direct / decimal conversion)
+python3 -c 'print(int("<ESN>", 16))'
+
+# Example: Convert ESN 100b213b to decimal
+python3 -c 'print(int("100b213b", 16))'
+# Output: 269553979
+
+# Hex to Decimal conversion (general)
+python3 -c 'print(int("<hex_value>", 16))'
+
+# Decimal to Hex conversion
+python3 -c 'print(hex(<decimal_value>))'
+
+# Example: Convert decimal 269553979 to hex
+python3 -c 'print(hex(269553979))'
+# Output: 0x100b213b
+```
+
+**Note:** Account numbers in dproxy are decimal, but account numbers in the system are hexadecimal.
 
 ---
 
