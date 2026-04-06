@@ -18,7 +18,24 @@ Always source credentials before any API call:
 source ~/.zshrc 2>/dev/null
 ```
 
-## Step 0 — Load Yesterday's Snapshot
+## Step 0 — Account Field Backfill
+
+Before anything else, backfill account fields on any CI tickets that are missing them:
+
+```bash
+source ~/.zshrc 2>/dev/null; python3 ~/Scripts/jira-account-backfill.py --silent
+```
+
+This outputs a single JSON line. Parse it:
+```python
+import json, subprocess, os
+result = json.loads(backfill_output)
+# {"updated": [{"key": "EEPD-XXXXX", "acct": "...", "sub": "..."}, ...], "failed": [], "total": N}
+```
+
+Store as `backfill_result`. If `result["total"] > 0`, add an Account Field Updates section to the report (see Output Format). If total is 0, skip the section entirely — no noise on clean days.
+
+## Step 1 — Load Yesterday's Snapshot
 
 Before running any sections, load yesterday's cache file (if it exists):
 
@@ -385,6 +402,10 @@ Present results grouped by team member. Include urgency score, assignee, last te
 
 ### Open Tickets by Engineering Team
 [table: Team | Total (±delta) | High | Medium | Low]
+
+### Account Field Updates (N tickets backfilled)  ← only include if N > 0
+- KEY → Account Name / Sub-account Name
+- KEY → Account Name
 ```
 
 Run all sections in parallel where possible (sections 1, 2, 3, 5, 6 are independent API calls that can run concurrently; sections 7 and 8 run after section 4 completes).
@@ -436,6 +457,7 @@ The document should contain **all sections in full detail** — every ticket lis
 6. Section 5: Full out-of-spec table
 7. Section 7: Full sprint carry-over breakdown — all three categories (punted, carried over, never in sprint) with complete ticket details
 8. Section 8: Open tickets by engineering team
+9. Account Field Updates: only if `backfill_result["total"] > 0` — list each updated ticket as `KEY → Account / Sub-account`
 
 ## Final Step — Upload Document and Send Briefing to Zulip
 

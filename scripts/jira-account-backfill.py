@@ -8,7 +8,8 @@ to the JIRA fields.
 
 Usage:
     python3 scripts/jira-account-backfill.py              # dry run (default)
-    python3 scripts/jira-account-backfill.py --write      # actually update JIRA
+    python3 scripts/jira-account-backfill.py --write      # write mode, verbose
+    python3 scripts/jira-account-backfill.py --silent     # write mode, JSON output only (for morning briefing)
 
 Requires env vars: JIRA_EMAIL, JIRA_API_TOKEN
 """
@@ -16,10 +17,26 @@ Requires env vars: JIRA_EMAIL, JIRA_API_TOKEN
 import os, json, re, subprocess, sys
 from datetime import datetime, timezone
 
-BASE        = 'https://eagleeyenetworks.atlassian.net'
-EMAIL       = os.environ.get('JIRA_EMAIL', '')
-TOKEN       = os.environ.get('JIRA_API_TOKEN', '')
-DRY_RUN     = '--write' not in sys.argv
+SILENT  = '--silent' in sys.argv
+DRY_RUN = '--write' not in sys.argv and not SILENT
+
+BASE = 'https://eagleeyenetworks.atlassian.net'
+
+# Load credentials from shell if not already in environment
+def _load_env():
+    result = subprocess.run(
+        ['zsh', '-c', 'source ~/.zshrc 2>/dev/null && env'],
+        capture_output=True, text=True
+    )
+    for line in result.stdout.splitlines():
+        if '=' in line:
+            k, _, v = line.partition('=')
+            if k in ('JIRA_EMAIL', 'JIRA_API_TOKEN') and not os.environ.get(k):
+                os.environ[k] = v
+
+_load_env()
+EMAIL = os.environ.get('JIRA_EMAIL', '')
+TOKEN = os.environ.get('JIRA_API_TOKEN', '')
 
 # CI tickets where account field is missing
 JQL = (
@@ -116,13 +133,20 @@ def parse_account_from_description(desc_text):
 
 def main():
     if not EMAIL or not TOKEN:
-        print('ERROR: JIRA_EMAIL and JIRA_API_TOKEN must be set.')
+        if SILENT:
+            print(json.dumps({'updated': [], 'failed': [], 'total': 0, 'error': 'Missing credentials'}))
+        else:
+            print('ERROR: JIRA_EMAIL and JIRA_API_TOKEN must be set.')
         sys.exit(1)
 
-    print(f'Mode: {"DRY RUN" if DRY_RUN else "WRITE"}\n')
-    print('Fetching CI tickets with empty account fields...')
+    if not SILENT:
+        print(f'Mode: {"DRY RUN" if DRY_RUN else "WRITE"}\n')
+        print('Fetching CI tickets with empty account fields...')
+
     issues = jira_search(JQL, FIELDS)
-    print(f'Found {len(issues)} tickets with missing account info.\n')
+
+    if not SILENT:
+        print(f'Found {len(issues)} tickets with missing account info.\n')
 
     parseable   = []
     unparseable = []
@@ -140,33 +164,37 @@ def main():
         else:
             unparseable.append((key, prio, summ))
 
-    # --- Report: what we can fill in ---
-    print(f'{"="*70}')
-    print(f'  PARSEABLE: {len(parseable)} tickets — account info found in description')
-    print(f'{"="*70}\n')
+    if not SILENT:
+        # --- Report: what we can fill in ---
+        print(f'{"="*70}')
+        print(f'  PARSEABLE: {len(parseable)} tickets — account info found in description')
+        print(f'{"="*70}\n')
+        for key, prio, summ, parsed in parseable:
+            print(f'  [{prio:8s}] {key}  {summ}')
+            if 'acct_id' in parsed:
+                print(f'             Master Account : {parsed["acct_id"]} — {parsed.get("acct_name","?")}')
+            if 'sub_id' in parsed:
+                print(f'             Sub-account    : {parsed["sub_id"]} — {parsed.get("sub_name","?")}')
+            print()
 
-    for key, prio, summ, parsed in parseable:
-        print(f'  [{prio:8s}] {key}  {summ}')
-        if 'acct_id' in parsed:
-            print(f'             Master Account : {parsed["acct_id"]} — {parsed.get("acct_name","?")}')
-        if 'sub_id' in parsed:
-            print(f'             Sub-account    : {parsed["sub_id"]} — {parsed.get("sub_name","?")}')
-        print()
-
-    # --- Report: what we can't fill in ---
-    print(f'{"="*70}')
-    print(f'  UNPARSEABLE: {len(unparseable)} tickets — no account pattern found in description')
-    print(f'{"="*70}\n')
-    for key, prio, summ in unparseable:
-        print(f'  [{prio:8s}] {key}  {summ}')
+        # --- Report: what we can't fill in ---
+        print(f'{"="*70}')
+        print(f'  UNPARSEABLE: {len(unparseable)} tickets — no account pattern found in description')
+        print(f'{"="*70}\n')
+        for key, prio, summ in unparseable:
+            print(f'  [{prio:8s}] {key}  {summ}')
 
     if DRY_RUN:
         print(f'\nDry run complete. Run with --write to update {len(parseable)} tickets.')
         return
 
-    # --- Write mode ---
-    print(f'\nWriting {len(parseable)} tickets...\n')
-    ok = fail = 0
+    # --- Write mode (verbose or silent) ---
+    if not SILENT:
+        print(f'\nWriting {len(parseable)} tickets...\n')
+
+    updated = []
+    failed  = []
+
     for key, prio, summ, parsed in parseable:
         fields_to_write = {}
         if 'acct_name' in parsed: fields_to_write['customfield_11063'] = parsed['acct_name']
@@ -176,13 +204,22 @@ def main():
 
         status = jira_update(key, fields_to_write)
         if status == '204':
-            print(f'  OK     {key}')
-            ok += 1
+            entry = {'key': key, 'acct': parsed.get('acct_name', '')}
+            if 'sub_name' in parsed:
+                entry['sub'] = parsed['sub_name']
+            updated.append(entry)
+            if not SILENT:
+                print(f'  OK     {key}')
         else:
-            print(f'  FAIL   {key}  (HTTP {status})')
-            fail += 1
+            failed.append(key)
+            if not SILENT:
+                print(f'  FAIL   {key}  (HTTP {status})')
 
-    print(f'\nDone. {ok} updated, {fail} failed.')
+    if SILENT:
+        # Machine-readable summary for morning briefing skill
+        print(json.dumps({'updated': updated, 'failed': failed, 'total': len(updated)}))
+    else:
+        print(f'\nDone. {len(updated)} updated, {len(failed)} failed.')
 
 
 if __name__ == '__main__':
