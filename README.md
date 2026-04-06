@@ -26,7 +26,7 @@ After adding to your shell config, run `source ~/.zshrc` to load them.
 
 **File:** `scripts/ci-dashboard.py`
 
-A local web dashboard with two tabs that pulls live JIRA data — customer-impact ticket health and a live VMSSUP support board view, both in one place.
+A local web dashboard with three tabs — customer-impact ticket health, a live VMSSUP support board view, and a morning briefing viewer.
 
 ![CI Dashboard](screenshots/ci-dashboard.png)
 
@@ -44,6 +44,16 @@ Shows the health of all open customer-impact tickets across EENS, EEPD, and Infr
 | Due Within 3 Days | Tickets with an approaching due date |
 | Repeatedly Punted | Tickets that have been added to 3+ sprints without closing |
 | Never in a Sprint | Tickets sitting in backlog with no engineering commitment |
+| Needs Team Response | Surfaced from a loaded morning briefing MD file (see Tab 3) |
+
+**Reporting section** (bottom of Tab 1):
+
+| Section | Description |
+|---------|-------------|
+| Throughput | Opened vs closed per week, last 4 weeks — bar chart |
+| Account Heat Map | Top accounts by open CI ticket count — click any row to see that account's tickets |
+| Engineer Load | Combined CI + VMSSUP ticket count per person |
+| Pipeline Health | Average ticket age per VMSSUP stage — shows where tickets are sitting longest |
 
 All cards are **resizable** — drag the bottom-right corner. Sizes are saved to `localStorage` and restored on every load.
 
@@ -60,6 +70,14 @@ A live view of the VMSSUP support board, grouped by assignee. Mirrors what you'd
 | Stalled section | High/Highest tickets with no update in ≥3 days |
 
 Assignee rows are **collapsible** — click the row header to expand/collapse.
+
+#### Tab 3 — Morning Briefing
+
+Drop or browse a morning briefing `.md` file to view it rendered in the dashboard. Loading a file also:
+- Shows a summary banner on the Customer Impact tab (CI total, out of spec count, needs-response counts)
+- Injects a **Needs Team Response** card into the Customer Impact tab
+
+See `examples/morning-briefing-example.md` for the expected file format.
 
 **Setup:**
 
@@ -84,20 +102,22 @@ CI_DASH_PORT=9000 python3 scripts/ci-dashboard.py
 
 **File:** `claude-skills/morning-briefing/SKILL.md`
 
-A Claude Code skill that runs a full daily JIRA briefing and sends it to Zulip as a DM.
+A Claude Code skill that runs a full daily JIRA briefing and sends it to Zulip as a DM. Also runs the account field backfill automatically before querying so the Account Heat Map is always fresh.
 
 **What it covers:**
 
 | Section | Description |
 |---------|-------------|
+| Account field backfill | Fills in missing account fields on CI tickets before running (see JIRA Account Backfill below) |
 | New tickets since yesterday | New VMSSUP support tickets + new EEPD customer-impact tickets |
 | High priority open | VMSSUP high/highest tickets, flagged if no movement in ≥3 days |
 | Medium priority open | VMSSUP medium tickets, flagged if stalled ≥7 days |
 | Total open customer impact | Age distribution chart with priority breakdown and delta vs. yesterday |
+| Needs team response | Tickets waiting on a team reply, urgency-scored via jira-stalker |
 | Out of spec work items | CI tickets violating SLA thresholds by priority |
 | Sprint carry-over | Repeatedly punted / carried over / never in sprint breakdown |
 | Open tickets by engineering team | Per-team CI ticket counts with High/Medium breakdown and deltas |
-| Needs team response | Tickets waiting on a team reply, urgency-scored via jira-stalker |
+| Account field updates | Any tickets backfilled this run (only shown if > 0) |
 
 Also generates a full markdown report saved to `~/Documents/Morning Briefing/` and uploads it as an attachment to the Zulip DM.
 
@@ -117,9 +137,11 @@ In Claude Code, type:
 /morning-briefing
 ```
 
-To install the skill, copy `claude-skills/morning-briefing/SKILL.md` to:
-```
-~/.claude/skills/morning-briefing/SKILL.md
+**Install the skill:**
+
+```bash
+mkdir -p ~/.claude/skills/morning-briefing
+cp claude-skills/morning-briefing/SKILL.md ~/.claude/skills/morning-briefing/SKILL.md
 ```
 
 ---
@@ -128,7 +150,7 @@ To install the skill, copy `claude-skills/morning-briefing/SKILL.md` to:
 
 **File:** `scripts/jira-stalker.py`
 
-A standalone script used by the morning briefing to flag support tickets where the team hasn't responded recently. Groups results by last team member who commented, sorted by urgency score.
+Flags support tickets where the team hasn't responded recently. Groups results by last team member who commented, sorted by urgency score. Used by the morning briefing skill.
 
 **Usage:**
 ```bash
@@ -138,7 +160,7 @@ python3 scripts/jira-stalker.py --prio high      # high priority only
 python3 scripts/jira-stalker.py --prio medium
 ```
 
-**Setup required:** Edit the `TEAM` list at the top of the script to match your own support team members' JIRA display names. This is what determines whose comments count as a "team response":
+**Setup required:** Edit the `TEAM` list at the top of the script to match your support team members' JIRA display names:
 
 ```python
 TEAM = [
@@ -148,7 +170,7 @@ TEAM = [
 ]
 ```
 
-The morning briefing skill expects this script at `~/Scripts/jira-stalker.py`. Copy it there after cloning:
+The morning briefing skill expects this script at `~/Scripts/jira-stalker.py`:
 ```bash
 cp scripts/jira-stalker.py ~/Scripts/jira-stalker.py
 ```
@@ -157,23 +179,74 @@ No additional dependencies — uses Python stdlib only.
 
 ---
 
+### JIRA Account Backfill
+
+**File:** `scripts/jira-account-backfill.py`
+
+Finds open customer-impact CI tickets where the account custom fields (`customfield_11063` etc.) are empty, parses account info from the description text, and writes it back to the structured JIRA fields. This keeps the Account Heat Map accurate.
+
+**Usage:**
+```bash
+python3 scripts/jira-account-backfill.py              # dry run — shows what would change
+python3 scripts/jira-account-backfill.py --write      # apply changes
+python3 scripts/jira-account-backfill.py --silent     # write + output JSON summary (used by morning briefing)
+```
+
+Always run a dry run first to review before writing.
+
+The morning briefing skill runs this automatically with `--silent` on every briefing. If any tickets were backfilled, the briefing MD will include an **Account Field Updates** section listing what was changed.
+
+**Install:**
+```bash
+cp scripts/jira-account-backfill.py ~/Scripts/jira-account-backfill.py
+```
+
+No additional dependencies — uses Python stdlib only.
+
+---
+
+## Full Setup Checklist
+
+1. **Clone the repo**
+2. **Set env vars** in `~/.zshrc` (JIRA + Zulip — see Prerequisites above)
+3. **Install dashboard dependencies:** `pip install -r scripts/requirements.txt`
+4. **Copy scripts to `~/Scripts/`:**
+   ```bash
+   mkdir -p ~/Scripts
+   cp scripts/jira-stalker.py ~/Scripts/jira-stalker.py
+   cp scripts/jira-account-backfill.py ~/Scripts/jira-account-backfill.py
+   ```
+5. **Edit `TEAM` list** in `~/Scripts/jira-stalker.py` with your team's JIRA display names
+6. **Install morning briefing skill:**
+   ```bash
+   mkdir -p ~/.claude/skills/morning-briefing
+   cp claude-skills/morning-briefing/SKILL.md ~/.claude/skills/morning-briefing/SKILL.md
+   ```
+7. **Run the dashboard:** `python3 scripts/ci-dashboard.py` → open http://localhost:8081
+8. **Run a morning briefing:** In Claude Code, type `/morning-briefing`
+
+---
+
 ## Repository Structure
 
 ```
 agarcia-test-tools/
-├── README.md                                   # This file
+├── README.md
+├── examples/
+│   └── morning-briefing-example.md             # Example briefing file for the MD viewer
 ├── screenshots/
-│   └── ci-dashboard.png                        # Dashboard screenshot
+│   └── ci-dashboard.png
 ├── scripts/
-│   ├── ci-dashboard.py                         # EEN Ops Dashboard (CI Health + VMSSUP Board)
-│   ├── jira-stalker.py                         # Flags tickets with no team response (used by morning briefing)
-│   └── requirements.txt                        # Python dependencies
+│   ├── ci-dashboard.py                         # EEN Ops Dashboard (3 tabs)
+│   ├── jira-stalker.py                         # Flags tickets with no team response
+│   ├── jira-account-backfill.py               # Backfills account fields on CI tickets
+│   └── requirements.txt                        # Python dependencies (Flask)
 ├── claude-skills/
 │   └── morning-briefing/
 │       └── SKILL.md                            # Claude Code morning briefing skill
-├── qa-starter-kit/                             # QA templates, commands, and workflows
-│   └── README.md                               # QA toolbox docs
-└── Notes/                                      # Reference docs and architecture notes
+├── qa-starter-kit/
+│   └── README.md
+└── Notes/
 ```
 
 ---
