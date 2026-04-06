@@ -981,6 +981,27 @@ function showBriefingBanner(data) {
   document.getElementById('briefing-banner-wrap').style.display = '';
 }
 
+function updateNeedsResponseCard() {
+  const existing = document.getElementById('card-needs-response');
+  if (existing) existing.remove();
+  if (!briefingData || !briefingData.needsResponseMd) return;
+  const app = document.getElementById('app');
+  if (!app) return;
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.id = 'card-needs-response';
+  card.innerHTML = `
+    <div class="card-header">Needs Team Response <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px;text-transform:none;letter-spacing:0">from this morning's briefing</span></div>
+    <div class="card-body md-body" style="padding:12px 18px">${marked.parse(briefingData.needsResponseMd)}</div>
+  `;
+  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  if (saved['card-needs-response']) card.style.height = saved['card-needs-response'] + 'px';
+  app.appendChild(card);
+  // Watch the new card for resize
+  const ro = new ResizeObserver(() => { let t; clearTimeout(t); t = setTimeout(saveSizes, 400); });
+  ro.observe(card);
+}
+
 function loadMdContent(text, filename) {
   mdFilename = filename;
   document.getElementById('md-filename').textContent = filename;
@@ -990,12 +1011,7 @@ function loadMdContent(text, filename) {
   if (currentTab === 'md') document.getElementById('refresh-time').textContent = filename;
   briefingData = parseBriefingData(text);
   showBriefingBanner(briefingData);
-  // Re-render CI tab so the Needs Team Response card appears
-  if (ciData) {
-    render(ciData);
-    restoreSizes();
-    watchSizes();
-  }
+  updateNeedsResponseCard();
 }
 
 function clearMd() {
@@ -1007,7 +1023,7 @@ function clearMd() {
   document.getElementById('md-file-input').value = '';
   document.getElementById('briefing-banner-wrap').style.display = 'none';
   if (currentTab === 'md') document.getElementById('refresh-time').textContent = 'No file loaded';
-  if (ciData) { render(ciData); restoreSizes(); watchSizes(); }
+  updateNeedsResponseCard();
 }
 
 function handleFileInput(evt) {
@@ -1350,12 +1366,6 @@ function render(d) {
       </div>
     </div>
 
-    <!-- Needs Team Response (from morning briefing) -->
-    ${briefingData && briefingData.needsResponseMd ? `
-    <div class="card" id="card-needs-response">
-      <div class="card-header">Needs Team Response <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px;text-transform:none;letter-spacing:0">from this morning's briefing</span></div>
-      <div class="card-body md-body" style="padding:12px 18px">${marked.parse(briefingData.needsResponseMd)}</div>
-    </div>` : ''}
   `;
 
   if (prioChart) prioChart.destroy();
