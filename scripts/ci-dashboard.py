@@ -1311,7 +1311,7 @@ function accountHeatHtml(accounts, unattributed, attributed) {
       return `<tr>
         <td>
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="team-name" style="min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.account}">${a.account}</span>
+            <span class="team-name" style="min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.account}">${a.account.replace(/^\d{6,8}\s*[-–]\s*/, '')}</span>
             <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${pct}%"></div></div>
           </div>
         </td>
