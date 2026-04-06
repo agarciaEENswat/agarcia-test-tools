@@ -239,6 +239,11 @@ def api_data():
                                   key=lambda x: -x['ci']),
         'account_heat':  sorted([{'account': k, **v} for k, v in acct_data.items() if k != '__unattributed__'],
                                   key=lambda x: -x['total'])[:15],
+        'account_attributed': {
+            'total':  sum(v['total']  for k, v in acct_data.items() if k != '__unattributed__'),
+            'high':   sum(v['high']   for k, v in acct_data.items() if k != '__unattributed__'),
+            'medium': sum(v['medium'] for k, v in acct_data.items() if k != '__unattributed__'),
+        },
         'account_unattributed': dict(acct_data.get('__unattributed__', {'total': 0, 'high': 0, 'medium': 0})),
         'refreshed_at':  now.isoformat(),
     })
@@ -1274,17 +1279,15 @@ function outOfSpecHtml(tickets) {
   </table>`;
 }
 
-function accountHeatHtml(accounts, unattributed) {
+function accountHeatHtml(accounts, unattributed, attributed) {
   if (!accounts || !accounts.length) return `<div class="empty">No account data — most CI tickets may lack account info.</div>`;
-  const ua        = unattributed || {total: 0, high: 0, medium: 0};
-  const max       = Math.max(...accounts.map(a => a.total), 1);
-  const attrTotal = accounts.reduce((s, a) => s + a.total, 0);
-  const attrHigh  = accounts.reduce((s, a) => s + (a.high || 0), 0);
-  const attrMed   = accounts.reduce((s, a) => s + (a.medium || 0), 0);
-  const grandTotal = attrTotal + (ua.total || 0);
-  const grandHigh  = attrHigh  + (ua.high  || 0);
-  const grandMed   = attrMed   + (ua.medium || 0);
-  const attrPct    = grandTotal ? Math.round(attrTotal / grandTotal * 100) : 100;
+  const ua         = unattributed || {total: 0, high: 0, medium: 0};
+  const attr        = attributed  || {total: 0, high: 0, medium: 0};
+  const max         = Math.max(...accounts.map(a => a.total), 1);
+  const grandTotal  = attr.total  + (ua.total  || 0);
+  const grandHigh   = attr.high   + (ua.high   || 0);
+  const grandMed    = attr.medium + (ua.medium || 0);
+  const attrPct     = grandTotal ? Math.round(attr.total / grandTotal * 100) : 100;
   return `<table class="team-table">
     <thead><tr>
       <th>Account</th>
@@ -1447,7 +1450,7 @@ function renderReporting(ci, vmssup, rep) {
     <div class="two-col">
       <div class="card" id="card-account-heat">
         <div class="card-header">Account Heat Map — Top Accounts by Open CI Tickets</div>
-        <div class="card-body">${accountHeatHtml(ci.account_heat, ci.account_unattributed)}</div>
+        <div class="card-body">${accountHeatHtml(ci.account_heat, ci.account_unattributed, ci.account_attributed)}</div>
       </div>
       <div class="card" id="card-engineer-load">
         <div class="card-header">Engineer Load — CI + VMSSUP Combined</div>
