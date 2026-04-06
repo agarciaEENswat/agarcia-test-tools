@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+venv/
+.venv/
+env/
+
+# Credentials — never commit these
+.env
+*.env
+credentials.json
+secrets.json
+*.token
+
+# Morning briefing cache
+morning-briefing-cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp

@@ -28,6 +28,8 @@ After adding to your shell config, run `source ~/.zshrc` to load them.
 
 A local web dashboard that pulls live JIRA data and displays customer-impact ticket health in one view — including the team ownership breakdown that JIRA's native gadgets can't do.
 
+![CI Dashboard](screenshots/ci-dashboard.png)
+
 **What it shows:**
 | Section | Description |
 |---------|-------------|
@@ -45,8 +47,8 @@ All cards are **resizable** — drag the bottom-right corner. Sizes are saved to
 **Setup:**
 
 ```bash
-# Install dependencies (uses the venv in ~/Scripts if available)
-pip install flask
+# Install dependencies
+pip install -r scripts/requirements.txt
 
 # Run
 python scripts/ci-dashboard.py
@@ -109,8 +111,11 @@ To install the skill, copy `claude-skills/morning-briefing/SKILL.md` to:
 ```
 agarcia-test-tools/
 ├── README.md                                   # This file
+├── screenshots/
+│   └── ci-dashboard.png                        # Dashboard screenshot
 ├── scripts/
-│   └── ci-dashboard.py                         # Customer Impact Health dashboard
+│   ├── ci-dashboard.py                         # Customer Impact Health dashboard
+│   └── requirements.txt                        # Python dependencies
 ├── claude-skills/
 │   └── morning-briefing/
 │       └── SKILL.md                            # Claude Code morning briefing skill
