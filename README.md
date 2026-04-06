@@ -31,6 +31,51 @@ To generate a JIRA API token: [id.atlassian.com/manage-profile/security/api-toke
 
 ---
 
+## Quick Start — Morning Briefing Skill
+
+Runs a full daily JIRA briefing and sends it to you as a Zulip DM.
+
+**Requirements:** [Claude Code](https://claude.ai/code) must be installed.
+
+```bash
+# 1. Clone (skip if you already did this for the dashboard)
+git clone https://github.com/agarciaEENswat/agarcia-test-tools.git
+cd agarcia-test-tools
+
+# 2. Copy scripts to ~/Scripts
+mkdir -p ~/Scripts
+cp scripts/jira-stalker.py ~/Scripts/jira-stalker.py
+cp scripts/jira-account-backfill.py ~/Scripts/jira-account-backfill.py
+
+# 3. Install the skill
+mkdir -p ~/.claude/skills/morning-briefing
+cp claude-skills/morning-briefing/SKILL.md ~/.claude/skills/morning-briefing/SKILL.md
+
+# 4. Add credentials to ~/.zshrc
+echo "export JIRA_EMAIL='your-email@een.com'" >> ~/.zshrc
+echo "export JIRA_API_TOKEN='your-api-token'" >> ~/.zshrc
+echo "export ZULIP_EMAIL='your-email@een.com'" >> ~/.zshrc
+echo "export ZULIP_API_KEY='your-zulip-api-key'" >> ~/.zshrc
+echo "export ZULIP_SITE='https://chat.eencloud.com'" >> ~/.zshrc
+echo "export ZULIP_USER_ID='your-numeric-zulip-id'" >> ~/.zshrc
+source ~/.zshrc
+
+# 5. Edit the TEAM list in jira-stalker to match your support team
+nano ~/Scripts/jira-stalker.py   # update the TEAM = [...] list at the top
+```
+
+Then in Claude Code, type:
+```
+/morning-briefing
+```
+
+**Where to find your credentials:**
+- JIRA API token: [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+- Zulip API key: chat.eencloud.com → Personal Settings → Account & Privacy → API key
+- Zulip User ID: chat.eencloud.com/#settings/account (numeric ID in the URL or profile page)
+
+---
+
 ## Prerequisites
 
 All tools in this repo authenticate against JIRA using environment variables. Add these to your `~/.zshrc` or `~/.bashrc`:
