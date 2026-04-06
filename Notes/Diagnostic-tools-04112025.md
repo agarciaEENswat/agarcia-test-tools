@@ -99,7 +99,7 @@ nmap \-sT \-sU \-T25 \-p 80,443,773,8081,8082,50000,60000
 
 /*bridgeservicestatus*∣*head* − 1∣*whileread* − *resn*; *dogetenthosts*"$1}'; done) | grep \-ivE '80/u|443/u|773/u|8081/u|8082/t|50000/u|60000/u' 
 
-echo root:@gqZIxBbw\#sG | chpasswd && echo Yes 
+echo root:<root_password> | chpasswd && echo Yes 
 
 esn.a.plumv.com" | awk '{print 
 
@@ -170,7 +170,7 @@ Timestamps in History
 
 export HISTTIMEFORMAT="%F %T " 
 
-echo 'root:REDACTED' | chpasswd && echo Yes 
+echo 'root:<root_password>' | chpasswd && echo Yes 
 
 **resizing tmp file size** 
 
@@ -724,7 +724,7 @@ bash emergency-tunnel.sh \--keep \--noexec
 
 then log into MFG and paste the ssh output from exec 
 
-EXEC \---\> echo 'root:REDACTED' | chpasswd && echo Yes 
+EXEC \---\> echo 'root:<root_password>' | chpasswd && echo Yes 
 
 yes 
 
