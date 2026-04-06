@@ -1381,13 +1381,13 @@ function render(d) {
 
 const CARD_IDS = ['card-needs-response','card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint'];
 const CARD_DEFAULTS = {
-  'card-priority':    375,
-  'card-team':        374,
+  'card-priority':    378,
+  'card-team':        379,
   'card-age-dist':    369,
   'card-out-of-spec': 369,
-  'card-due-soon':    415,
-  'card-punted':      416,
-  'card-never-sprint':417,
+  'card-due-soon':    420,
+  'card-punted':      420,
+  'card-never-sprint':420,
 };
 const STORAGE_KEY = 'ci-dash-sizes';
 
