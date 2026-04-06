@@ -1159,7 +1159,7 @@ function handleDrop(evt) {
 }
 
 function jiraLink(extraJql) {
-  const jql = extraJql ? CI_BASE + ' AND ' + extraJql : CI_BASE;
+  const jql = (extraJql ? CI_BASE + ' AND ' + extraJql : CI_BASE) + ' ORDER BY priority DESC, updated ASC';
   return JIRA_NAV + encodeURIComponent(jql);
 }
 
