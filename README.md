@@ -90,6 +90,7 @@ Also generates a full markdown report saved to `~/Documents/Morning Briefing/` a
 export ZULIP_EMAIL='your-email@een.com'
 export ZULIP_API_KEY='your-zulip-api-key'
 export ZULIP_SITE='https://chat.eencloud.com'
+export ZULIP_USER_ID='your-zulip-user-id'  # numeric ID, find at chat.eencloud.com/#settings/account
 ```
 
 **How to run:**

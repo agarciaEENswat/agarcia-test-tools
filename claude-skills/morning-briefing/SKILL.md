@@ -461,7 +461,7 @@ Append the document link to the end of the briefing message:
 source ~/.zshrc 2>/dev/null; curl -s -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   "$ZULIP_SITE/api/v1/messages" \
   -d "type=direct" \
-  -d "to=[747]" \
+  -d "to=[$ZULIP_USER_ID]" \
   --data-urlencode "content=<full briefing text with document link at bottom>"
 ```
 
