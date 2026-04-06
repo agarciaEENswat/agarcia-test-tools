@@ -124,6 +124,39 @@ To install the skill, copy `claude-skills/morning-briefing/SKILL.md` to:
 
 ---
 
+### JIRA Stalker
+
+**File:** `scripts/jira-stalker.py`
+
+A standalone script used by the morning briefing to flag support tickets where the team hasn't responded recently. Groups results by last team member who commented, sorted by urgency score.
+
+**Usage:**
+```bash
+python3 scripts/jira-stalker.py                  # check both queues, 2-day threshold
+python3 scripts/jira-stalker.py --days 1         # stricter: flag after 1 day
+python3 scripts/jira-stalker.py --prio high      # high priority only
+python3 scripts/jira-stalker.py --prio medium
+```
+
+**Setup required:** Edit the `TEAM` list at the top of the script to match your own support team members' JIRA display names. This is what determines whose comments count as a "team response":
+
+```python
+TEAM = [
+    "Your Name",
+    "Teammate Name",
+    ...
+]
+```
+
+The morning briefing skill expects this script at `~/Scripts/jira-stalker.py`. Copy it there after cloning:
+```bash
+cp scripts/jira-stalker.py ~/Scripts/jira-stalker.py
+```
+
+No additional dependencies — uses Python stdlib only.
+
+---
+
 ## Repository Structure
 
 ```
@@ -133,6 +166,7 @@ agarcia-test-tools/
 │   └── ci-dashboard.png                        # Dashboard screenshot
 ├── scripts/
 │   ├── ci-dashboard.py                         # EEN Ops Dashboard (CI Health + VMSSUP Board)
+│   ├── jira-stalker.py                         # Flags tickets with no team response (used by morning briefing)
 │   └── requirements.txt                        # Python dependencies
 ├── claude-skills/
 │   └── morning-briefing/
