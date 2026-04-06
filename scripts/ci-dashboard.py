@@ -220,16 +220,31 @@ def api_data():
     teams_sorted = sorted(team_data.items(), key=lambda x: -x[1]['total'])
 
     # Build per-team ticket lists for inline panel
-    teams_tickets = defaultdict(list)
+    teams_tickets   = defaultdict(list)
+    account_tickets = defaultdict(list)
     for issue in all_issues:
-        team = (issue['fields'].get('customfield_10500') or {}).get('name', 'Unassigned')
+        f    = issue['fields']
+        team = (f.get('customfield_10500') or {}).get('name', 'Unassigned')
         teams_tickets[team].append(fmt_issue(issue, now))
+
+        acct_raw = f.get('customfield_11063')
+        if isinstance(acct_raw, dict):
+            acct_key = acct_raw.get('value') or acct_raw.get('name') or ''
+        else:
+            acct_key = str(acct_raw).strip() if acct_raw else ''
+        if not acct_key:
+            desc_text = _extract_adf_text(f.get('description') or {})
+            m = re.search(r'(?:Master\s+)?Account:\s*\d+\s*[-–]\s*(.+)', desc_text, re.IGNORECASE)
+            if m:
+                acct_key = m.group(1).strip().split('\n')[0].strip()
+        account_tickets[acct_key or '__none__'].append(fmt_issue(issue, now))
 
     return jsonify({
         'total':         len(all_issues),
         'prio_counts':   dict(prio_counts),
         'teams':         [{'name': k, **v} for k, v in teams_sorted],
-        'teams_tickets': {k: sorted(v, key=lambda x: -x['age_days']) for k, v in teams_tickets.items()},
+        'teams_tickets':   {k: sorted(v, key=lambda x: -x['age_days']) for k, v in teams_tickets.items()},
+        'account_tickets': {k: sorted(v, key=lambda x: -x['age_days']) for k, v in account_tickets.items()},
         'age_dist':      [{'label': lbl, **age_dist[lbl]} for lbl, _, _ in AGE_BUCKETS],
         'out_of_spec':   out_of_spec,
         'due_soon':      sorted(due_soon, key=lambda x: x['duedate']),
@@ -1009,6 +1024,7 @@ let teamsTickets   = {};   // team name → ticket list
 let otherTeamNames = [];   // team names rolled into "Other"
 let ciData         = null;
 let vmssupData     = null;
+let accountTickets = {};
 let reportingData  = null;
 let throughputChart = null;
 let currentTab     = 'ci';
@@ -1181,6 +1197,24 @@ function openTeamModal(teamName) {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
+function openAccountModal(rawName) {
+  const tickets     = accountTickets[rawName] || [];
+  const displayName = rawName.replace(/^\d{6,8}\s*[-–]\s*/, '');
+  document.getElementById('modal-title').textContent = `${displayName} — ${tickets.length} ticket${tickets.length !== 1 ? 's' : ''}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-col-hdr"><span>Key</span><span>Priority</span><span>Summary</span><span>Assignee</span><span>Age</span></div>
+    ${tickets.map(t => `
+      <div class="modal-ticket">
+        <a class="ticket-key" href="${t.url}" target="_blank">${t.key}</a>
+        ${prioBadge(t.priority)}
+        <span class="ticket-summary" title="${t.summary}">${t.summary}</span>
+        <span style="color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.assignee}</span>
+        <span style="color:var(--muted);font-size:11px">${t.age_days}d</span>
+      </div>`).join('')}
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
 function closeModal(evt) {
   if (evt && evt.target !== document.getElementById('modal-overlay')) return;
   document.getElementById('modal-overlay').classList.remove('open');
@@ -1307,11 +1341,13 @@ function accountHeatHtml(accounts, unattributed, attributed) {
       </tr>
     </thead>
     <tbody>${accounts.map(a => {
-      const pct = Math.round(a.total / max * 100);
-      return `<tr>
+      const pct         = Math.round(a.total / max * 100);
+      const displayName = a.account.replace(/^\d{6,8}\s*[-–]\s*/, '');
+      const safeKey     = a.account.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<tr style="cursor:pointer" onclick="openAccountModal('${safeKey}')" title="Click to view tickets">
         <td>
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="team-name" style="min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.account}">${a.account.replace(/^\d{6,8}\s*[-–]\s*/, '')}</span>
+            <span class="team-name" style="min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.account}">${displayName}</span>
             <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${pct}%"></div></div>
           </div>
         </td>
@@ -1595,7 +1631,8 @@ function render(d) {
   const medium  = p['Medium']  || 0;
 
   // Store globally for click handlers
-  teamsTickets = d.teams_tickets;
+  teamsTickets   = d.teams_tickets;
+  accountTickets = d.account_tickets || {};
 
   otherTeamNames = [];
   const displayTeams = d.teams;
