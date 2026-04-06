@@ -22,15 +22,18 @@ After adding to your shell config, run `source ~/.zshrc` to load them.
 
 ## Tools
 
-### Customer Impact Health Dashboard
+### EEN Ops Dashboard
 
 **File:** `scripts/ci-dashboard.py`
 
-A local web dashboard that pulls live JIRA data and displays customer-impact ticket health in one view — including the team ownership breakdown that JIRA's native gadgets can't do.
+A local web dashboard with two tabs that pulls live JIRA data — customer-impact ticket health and a live VMSSUP support board view, both in one place.
 
 ![CI Dashboard](screenshots/ci-dashboard.png)
 
-**What it shows:**
+#### Tab 1 — Customer Impact
+
+Shows the health of all open customer-impact tickets across EENS, EEPD, and Infrastructure.
+
 | Section | Description |
 |---------|-------------|
 | Stat tiles | Total CI tickets, Highest/High/Medium counts, Due ≤3 days — all clickable to JIRA |
@@ -44,6 +47,20 @@ A local web dashboard that pulls live JIRA data and displays customer-impact tic
 
 All cards are **resizable** — drag the bottom-right corner. Sizes are saved to `localStorage` and restored on every load.
 
+#### Tab 2 — VMSSUP Board
+
+A live view of the VMSSUP support board, grouped by assignee. Mirrors what you'd see on the JIRA Kanban board but with stall detection added.
+
+| Section | Description |
+|---------|-------------|
+| Stat tiles | Total open, Highest/High/Medium counts, Stalled ≥3d — all clickable to JIRA |
+| Assignee rows | One row per assignee showing their tickets across all 4 active columns |
+| Columns | Assistance/To-Do, Triage, Engineering, Support Review |
+| Ticket cards | Priority-colored left border, summary, JIRA key, and age |
+| Stalled section | High/Highest tickets with no update in ≥3 days |
+
+Assignee rows are **collapsible** — click the row header to expand/collapse.
+
 **Setup:**
 
 ```bash
@@ -51,14 +68,14 @@ All cards are **resizable** — drag the bottom-right corner. Sizes are saved to
 pip install -r scripts/requirements.txt
 
 # Run
-python scripts/ci-dashboard.py
+python3 scripts/ci-dashboard.py
 ```
 
 Then open **http://localhost:8081** in your browser.
 
 To run on a different port:
 ```bash
-CI_DASH_PORT=9000 python scripts/ci-dashboard.py
+CI_DASH_PORT=9000 python3 scripts/ci-dashboard.py
 ```
 
 ---
@@ -115,7 +132,7 @@ agarcia-test-tools/
 ├── screenshots/
 │   └── ci-dashboard.png                        # Dashboard screenshot
 ├── scripts/
-│   ├── ci-dashboard.py                         # Customer Impact Health dashboard
+│   ├── ci-dashboard.py                         # EEN Ops Dashboard (CI Health + VMSSUP Board)
 │   └── requirements.txt                        # Python dependencies
 ├── claude-skills/
 │   └── morning-briefing/

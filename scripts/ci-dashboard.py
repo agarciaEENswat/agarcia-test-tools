@@ -35,6 +35,21 @@ CI_BASE = (
     'AND (duedate is EMPTY OR duedate <= now())'
 )
 
+VMSSUP_JQL = (
+    'project = VMSSUP '
+    'AND statusCategory not in (Done) '
+    'AND NOT (description ~ "task id" AND reporter in (604fb2f681b82500682d022a))'
+)
+
+# Board column → status names (from board config status IDs)
+VMSSUP_COLUMNS = [
+    ("Backlog",            ["Backlog"]),
+    ("Assistance / To-Do", ["Assistance", "Support Assistance"]),
+    ("Triage",             ["Triaging"]),
+    ("Engineering",        ["Investigation", "Engineering Work", "Infrastructure Work", "In Progress"]),
+    ("Support Review",     ["Support Review", "Resolved Review"]),
+]
+
 FIELDS_FULL  = ['summary','status','priority','assignee','duedate','labels',
                 'customfield_10500','created','project','sprint']
 FIELDS_SHORT = ['summary','status','priority','assignee','duedate','project','created']
@@ -176,6 +191,74 @@ def api_data():
         'punted':        punted,
         'never_sprint':  never_sprint[:20],
         'refreshed_at':  now.isoformat(),
+    })
+
+
+@app.route('/api/vmssup')
+def api_vmssup():
+    now = datetime.now(timezone.utc)
+    fields = ['summary', 'status', 'priority', 'assignee', 'created', 'updated']
+    issues = jira_search(VMSSUP_JQL, fields, max_results=200)
+
+    status_to_col = {}
+    for col_name, statuses in VMSSUP_COLUMNS:
+        for s in statuses:
+            status_to_col[s] = col_name
+
+    DISPLAY_COLS = [col for col, _ in VMSSUP_COLUMNS if col != 'Backlog']
+    PRIO_ORDER   = {'Highest': 0, 'High': 1, 'Medium': 2}
+
+    prio_counts   = defaultdict(int)
+    assignee_grid = defaultdict(lambda: {c: [] for c in DISPLAY_COLS})
+    all_tickets   = []
+
+    for i in issues:
+        f    = i['fields']
+        prio = (f.get('priority') or {}).get('name', 'Medium')
+        created = datetime.fromisoformat(f['created'].replace('Z', '+00:00'))
+        updated = datetime.fromisoformat(f['updated'].replace('Z', '+00:00'))
+        t = {
+            'key':        i['key'],
+            'summary':    f.get('summary', ''),
+            'status':     (f.get('status') or {}).get('name', ''),
+            'priority':   prio,
+            'assignee':   (f.get('assignee') or {}).get('displayName', 'Unassigned'),
+            'age_days':   (now - created).days,
+            'stale_days': (now - updated).days,
+            'url':        f'{BASE}/browse/{i["key"]}',
+        }
+        prio_counts[prio] += 1
+        all_tickets.append(t)
+        col = status_to_col.get(t['status'])
+        if col and col in DISPLAY_COLS:
+            assignee_grid[t['assignee']][col].append(t)
+
+    # Build sorted assignee rows
+    assignees = []
+    for name in sorted(assignee_grid):
+        cols  = {}
+        total = 0
+        for col in DISPLAY_COLS:
+            tickets = sorted(
+                assignee_grid[name][col],
+                key=lambda x: (PRIO_ORDER.get(x['priority'], 3), x['status'])
+            )
+            cols[col] = tickets
+            total    += len(tickets)
+        assignees.append({'name': name, 'total': total, 'columns': cols})
+
+    # Stalled: High/Highest not updated in ≥3 days
+    stalled = [t for t in all_tickets
+               if t['stale_days'] >= 3 and t['priority'] in ('Highest', 'High')]
+    stalled.sort(key=lambda x: (x['priority'] != 'Highest', -x['stale_days']))
+
+    return jsonify({
+        'total':        len(issues),
+        'prio_counts':  dict(prio_counts),
+        'assignees':    assignees,
+        'display_cols': DISPLAY_COLS,
+        'stalled':      stalled,
+        'refreshed_at': now.isoformat(),
     })
 
 
@@ -507,20 +590,140 @@ header h1 { font-size: 16px; font-weight: 600; }
   color: var(--muted);
   border-bottom: 1px solid var(--border);
 }
+
+/* Tabs */
+.tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.tab {
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+/* Assignee board */
+.assignee-board {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.assignee-group { border-bottom: 1px solid var(--border); }
+.assignee-group:last-child { border-bottom: none; }
+.assignee-group.collapsed .assignee-body { display: none; }
+.assignee-group.collapsed .assignee-chevron { transform: rotate(-90deg); }
+.assignee-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+}
+.assignee-header:hover { background: var(--surface2); }
+.assignee-chevron {
+  font-size: 11px;
+  color: var(--muted);
+  transition: transform .15s;
+  display: inline-block;
+}
+.assignee-name  { font-size: 14px; font-weight: 600; }
+.assignee-count { font-size: 12px; color: var(--muted); }
+.board-cols-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--border);
+}
+.board-col { border-right: 1px solid var(--border); min-height: 56px; }
+.board-col:last-child { border-right: none; }
+.board-col-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.board-col-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--border);
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+.board-col-tickets {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0,0,0,.12);
+  min-height: 12px;
+}
+.board-ticket {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px 8px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  text-decoration: none;
+  color: inherit;
+  transition: filter .15s;
+}
+.board-ticket:hover { filter: brightness(1.1); }
+.board-ticket-summary { font-size: 13px; color: var(--text); line-height: 1.4; }
+.board-ticket-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Customer Impact Health</h1>
+  <h1>EEN Ops Dashboard</h1>
   <div class="header-right">
     <span id="refresh-time">Loading…</span>
     <button id="refresh-btn" onclick="load()">Refresh</button>
   </div>
 </header>
 
-<div class="wrapper" id="app">
-  <div class="loading"><div class="spinner"></div> Loading JIRA data…</div>
+<nav class="tab-bar">
+  <button class="tab active" data-tab="ci" onclick="switchTab('ci')">Customer Impact</button>
+  <button class="tab" data-tab="vmssup" onclick="switchTab('vmssup')">VMSSUP Board</button>
+</nav>
+
+<div id="panel-ci">
+  <div class="wrapper" id="app">
+    <div class="loading"><div class="spinner"></div> Loading JIRA data…</div>
+  </div>
+</div>
+<div id="panel-vmssup" style="display:none">
+  <div class="wrapper" id="vmssup-app">
+    <div class="loading"><div class="spinner"></div> Loading VMSSUP board…</div>
+  </div>
 </div>
 
 <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
@@ -542,6 +745,18 @@ let teamChart      = null;
 let teamData       = [];   // stored so chart onClick can reference by index
 let teamsTickets   = {};   // team name → ticket list
 let otherTeamNames = [];   // team names rolled into "Other"
+let ciData         = null;
+let vmssupData     = null;
+let currentTab     = 'ci';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('panel-ci').style.display     = tab === 'ci'     ? '' : 'none';
+  document.getElementById('panel-vmssup').style.display = tab === 'vmssup' ? '' : 'none';
+  const d = tab === 'ci' ? ciData : vmssupData;
+  if (d) document.getElementById('refresh-time').textContent = 'Refreshed ' + formatRefreshTime(d.refreshed_at);
+}
 
 function jiraLink(extraJql) {
   const jql = extraJql ? CI_BASE + ' AND ' + extraJql : CI_BASE;
@@ -678,6 +893,91 @@ function outOfSpecHtml(tickets) {
       </tr>`).join('')}
     </tbody>
   </table>`;
+}
+
+function renderVmssup(d) {
+  const p       = d.prio_counts;
+  const highest = p['Highest'] || 0;
+  const high    = p['High']    || 0;
+  const medium  = p['Medium']  || 0;
+
+  function vmssupLink(extra) {
+    const base = 'project = VMSSUP AND statusCategory not in (Done) AND NOT (description ~ "task id" AND reporter in (604fb2f681b82500682d022a))';
+    return JIRA_NAV + encodeURIComponent(extra ? base + ' AND ' + extra : base);
+  }
+
+  const PRIO_BORDER = { 'Highest': 'var(--red)', 'High': 'var(--orange)', 'Medium': 'var(--blue)' };
+
+  function boardTicket(t) {
+    const color = PRIO_BORDER[t.priority] || 'var(--border)';
+    return `
+      <a class="board-ticket" href="${t.url}" target="_blank" style="border-left-color:${color}">
+        <div class="board-ticket-summary">${t.summary}</div>
+        <div class="board-ticket-footer">
+          <span class="ticket-key" style="font-size:11px">${t.key}</span>
+          ${prioBadge(t.priority)}
+          <span style="color:var(--muted);font-size:10px;margin-left:auto">${t.age_days}d</span>
+        </div>
+      </a>`;
+  }
+
+  function assigneeRow(a) {
+    const colsHtml = d.display_cols.map(col => {
+      const tickets = a.columns[col] || [];
+      const cntHtml = tickets.length ? `<span class="board-col-count">${tickets.length}</span>` : '';
+      return `
+        <div class="board-col">
+          <div class="board-col-header">${col}${cntHtml}</div>
+          <div class="board-col-tickets">${tickets.map(boardTicket).join('')}</div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="assignee-group">
+        <div class="assignee-header" onclick="this.parentElement.classList.toggle('collapsed')">
+          <span class="assignee-chevron">▾</span>
+          <span class="assignee-name">${a.name}</span>
+          <span class="assignee-count">(${a.total} work item${a.total !== 1 ? 's' : ''})</span>
+        </div>
+        <div class="assignee-body">
+          <div class="board-cols-row">${colsHtml}</div>
+        </div>
+      </div>`;
+  }
+
+  const stalledHtml = d.stalled.length ? `
+    <div class="card">
+      <div class="card-header">Stalled — High/Highest, No Movement ≥3 Days (${d.stalled.length})</div>
+      <div class="card-body">
+        <table class="oos-table">
+          <thead><tr><th>Key</th><th>Priority</th><th>Stale</th><th>Assignee</th><th>Summary</th></tr></thead>
+          <tbody>${d.stalled.map(t => `
+            <tr>
+              <td><a class="ticket-key" href="${t.url}" target="_blank">${t.key}</a></td>
+              <td>${prioBadge(t.priority)}</td>
+              <td><span class="age-pill" style="background:rgba(240,136,62,.15);color:var(--orange)">${t.stale_days}d</span></td>
+              <td style="color:var(--muted);font-size:11px;white-space:nowrap">${t.assignee.split(' ')[0]}</td>
+              <td class="ticket-summary" title="${t.summary}">${t.summary}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : '';
+
+  document.getElementById('vmssup-app').innerHTML = `
+    <div class="stats-row">
+      <a class="stat-tile" href="${vmssupLink()}" target="_blank"><div class="val total">${d.total}</div><div class="lbl">Total Open</div></a>
+      <a class="stat-tile" href="${vmssupLink('priority = Highest')}" target="_blank"><div class="val highest">${highest}</div><div class="lbl">Highest</div></a>
+      <a class="stat-tile" href="${vmssupLink('priority = High')}" target="_blank"><div class="val high">${high}</div><div class="lbl">High</div></a>
+      <a class="stat-tile" href="${vmssupLink('priority = Medium')}" target="_blank"><div class="val medium">${medium}</div><div class="lbl">Medium</div></a>
+      <a class="stat-tile" href="${vmssupLink('updated <= -3d AND priority in (Highest, High)')}" target="_blank"><div class="val due">${d.stalled.length}</div><div class="lbl">Stalled ≥3d</div></a>
+    </div>
+
+    <div class="assignee-board">
+      ${d.assignees.map(assigneeRow).join('')}
+    </div>
+
+    ${stalledHtml}
+  `;
 }
 
 function render(d) {
@@ -829,12 +1129,15 @@ async function load() {
   btn.classList.add('spinning');
   btn.disabled = true;
   try {
-    const r = await fetch('/api/data');
-    const d = await r.json();
-    render(d);
+    const [ciResp, vmssupResp] = await Promise.all([fetch('/api/data'), fetch('/api/vmssup')]);
+    ciData     = await ciResp.json();
+    vmssupData = await vmssupResp.json();
+    render(ciData);
+    renderVmssup(vmssupData);
     restoreSizes();
     watchSizes();
-    document.getElementById('refresh-time').textContent = 'Refreshed ' + formatRefreshTime(d.refreshed_at);
+    const active = currentTab === 'ci' ? ciData : vmssupData;
+    document.getElementById('refresh-time').textContent = 'Refreshed ' + formatRefreshTime(active.refreshed_at);
   } catch(e) {
     document.getElementById('app').innerHTML = `<div class="loading" style="color:var(--red)">Error loading data: ${e}</div>`;
   } finally {
