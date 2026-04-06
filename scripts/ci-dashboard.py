@@ -913,6 +913,9 @@ function parseBriefingData(text) {
   if (nrHighM) d.needsHigh = parseInt(nrHighM[1]);
   const nrMedM = text.match(/\*\*Medium\*\*[^\n]*?(\d+)\s*ticket/);
   if (nrMedM) d.needsMed = parseInt(nrMedM[1]);
+  // Extract full Needs Team Response section
+  const ntrM = text.match(/###\s*Needs Team Response\n([\s\S]*?)(?=\n###\s|\n##\s|$)/);
+  if (ntrM) d.needsResponseMd = ntrM[1].trim();
   return Object.keys(d).length > 1 ? d : null;
 }
 
@@ -1231,6 +1234,13 @@ function render(d) {
       <a class="stat-tile" href="${jiraLink('duedate <= 3d AND duedate is not EMPTY')}" target="_blank"><div class="val due">${d.due_soon.length}</div><div class="lbl">Due ≤3 days</div></a>
     </div>
 
+    <!-- Needs Team Response (from morning briefing MD) -->
+    ${briefingData && briefingData.needsResponseMd ? `
+    <div class="card" id="card-needs-response">
+      <div class="card-header">Needs Team Response <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px;text-transform:none;letter-spacing:0">from this morning's briefing</span></div>
+      <div class="card-body md-body" style="padding:12px 18px">${marked.parse(briefingData.needsResponseMd)}</div>
+    </div>` : ''}
+
     <!-- Two charts -->
     <div class="two-col">
       <div class="card" id="card-priority">
@@ -1311,7 +1321,7 @@ function render(d) {
   });
 }
 
-const CARD_IDS = ['card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint'];
+const CARD_IDS = ['card-needs-response','card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint'];
 const STORAGE_KEY = 'ci-dash-sizes';
 
 function saveSizes() {
