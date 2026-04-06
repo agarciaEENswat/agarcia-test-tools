@@ -353,7 +353,7 @@ Compare totals against `yesterday_snapshot.team_counts` and show deltas (▲/▼
 
 Save `team_counts` to today's snapshot as a dict of `{team_name: total}`.
 
-## Section 6 — Needs Team Response (jira-stalker)
+## Section 6 — Needs Team Response + Waiting on Support (jira-stalker)
 
 Run the stalker script twice — once for high (1-day threshold), once for medium (2-day threshold). Run in parallel with Section 4:
 
@@ -362,7 +362,11 @@ source ~/.zshrc 2>/dev/null; python3 ~/Scripts/jira-stalker.py --prio high --day
 source ~/.zshrc 2>/dev/null; python3 ~/Scripts/jira-stalker.py --prio medium --days 2 2>&1
 ```
 
-Present results grouped by team member. Include urgency score, assignee, last team comment age, latest activity, and sprint deadline. Highlight:
+The stalker now outputs **two buckets**:
+
+**WAITING ON SUPPORT TO VERIFY** — tickets where a non-team member's recent comment contains handoff language ("please validate", "fix deployed", "has been released", etc.) and no team member has commented since. These are tickets where **we** own the next action — not engineering. Surface these prominently at the top of Section 6, before Needs Team Response.
+
+**NEEDS RESPONSE** — tickets where the team hasn't replied within the threshold. Present results grouped by last team commenter. Include urgency score, assignee, last team comment age, latest activity, and sprint deadline. Highlight:
 - Sprint already ended (urgent)
 - Score >= 10 (very overdue)
 - "No team comment yet" group (critical)
@@ -382,6 +386,9 @@ Present results grouped by team member. Include urgency score, assignee, last te
 [table with STALLED flags]
 
 ### Total Open Customer Impact Tickets: N
+
+### Waiting on Support to Verify (N tickets)  ← omit section if 0
+[ticket | assignee | handoff by | snippet of handoff comment]
 
 ### Needs Team Response
 **High** (>1 day without team reply — N tickets)
@@ -453,7 +460,7 @@ The document should contain **all sections in full detail** — every ticket lis
 2. Section 1: All new tickets (full table)
 3. Section 2 & 3: All high/medium open tickets (full tables with NO MOVEMENT / STALLED flags)
 4. Section 4: Customer impact age chart + full ticket list
-5. Section 6: Full jira-stalker output — Needs Team Response (High + Medium)
+5. Section 6: Waiting on Support to Verify (if any) + Full jira-stalker output — Needs Team Response (High + Medium)
 6. Section 5: Full out-of-spec table
 7. Section 7: Full sprint carry-over breakdown — all three categories (punted, carried over, never in sprint) with complete ticket details
 8. Section 8: Open tickets by engineering team
@@ -484,7 +491,7 @@ Append the document link to the end of the briefing message:
 source ~/.zshrc 2>/dev/null; curl -s -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   "$ZULIP_SITE/api/v1/messages" \
   -d "type=direct" \
-  -d "to=[$ZULIP_USER_ID]" \
+  -d "to=[747]" \
   --data-urlencode "content=<full briefing text with document link at bottom>"
 ```
 
