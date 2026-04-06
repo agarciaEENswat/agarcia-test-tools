@@ -317,6 +317,34 @@ header h1 { font-size: 16px; font-weight: 600; }
 }
 #refresh-btn:hover { border-color: var(--blue); }
 #refresh-btn.spinning { color: var(--muted); cursor: not-allowed; }
+.jira-search {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+#jira-search-input {
+  padding: 5px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  color: var(--text);
+  font-size: 12px;
+  width: 140px;
+  outline: none;
+}
+#jira-search-input::placeholder { color: var(--muted); }
+#jira-search-input:focus { border-color: var(--blue); }
+#jira-search-btn {
+  padding: 5px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 6px 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+#jira-search-btn:hover { border-color: var(--blue); color: var(--blue); }
 
 .wrapper { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
 
@@ -816,6 +844,11 @@ header h1 { font-size: 16px; font-weight: 600; }
 <header>
   <h1>EEN Ops Dashboard</h1>
   <div class="header-right">
+    <div class="jira-search">
+      <input id="jira-search-input" type="text" placeholder="EENS-12345…"
+             onkeydown="if(event.key==='Enter') jiraSearch()">
+      <button id="jira-search-btn" onclick="jiraSearch()">→</button>
+    </div>
     <span id="refresh-time">Loading…</span>
     <button id="refresh-btn" onclick="load()">Refresh</button>
   </div>
@@ -884,6 +917,13 @@ let ciData         = null;
 let vmssupData     = null;
 let currentTab     = 'ci';
 
+function jiraSearch() {
+  const val = document.getElementById('jira-search-input').value.trim().toUpperCase();
+  if (!val) return;
+  window.open(`https://eagleeyenetworks.atlassian.net/browse/${val}`, '_blank');
+  document.getElementById('jira-search-input').value = '';
+}
+
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
@@ -914,7 +954,7 @@ function parseBriefingData(text) {
   const nrMedM = text.match(/\*\*Medium\*\*[^\n]*?(\d+)\s*ticket/);
   if (nrMedM) d.needsMed = parseInt(nrMedM[1]);
   // Extract full Needs Team Response section
-  const ntrM = text.match(/###\s*Needs Team Response\n([\s\S]*?)(?=\n###\s|\n##\s|$)/);
+  const ntrM = text.match(/##\s*Needs Team Response\n([\s\S]*?)(?=\n##\s|$)/);
   if (ntrM) d.needsResponseMd = ntrM[1].trim();
   return Object.keys(d).length > 1 ? d : null;
 }
@@ -950,6 +990,12 @@ function loadMdContent(text, filename) {
   if (currentTab === 'md') document.getElementById('refresh-time').textContent = filename;
   briefingData = parseBriefingData(text);
   showBriefingBanner(briefingData);
+  // Re-render CI tab so the Needs Team Response card appears
+  if (ciData) {
+    render(ciData);
+    restoreSizes();
+    watchSizes();
+  }
 }
 
 function clearMd() {
@@ -961,6 +1007,7 @@ function clearMd() {
   document.getElementById('md-file-input').value = '';
   document.getElementById('briefing-banner-wrap').style.display = 'none';
   if (currentTab === 'md') document.getElementById('refresh-time').textContent = 'No file loaded';
+  if (ciData) { render(ciData); restoreSizes(); watchSizes(); }
 }
 
 function handleFileInput(evt) {
@@ -1235,12 +1282,6 @@ function render(d) {
     </div>
 
     <!-- Needs Team Response (from morning briefing MD) -->
-    ${briefingData && briefingData.needsResponseMd ? `
-    <div class="card" id="card-needs-response">
-      <div class="card-header">Needs Team Response <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px;text-transform:none;letter-spacing:0">from this morning's briefing</span></div>
-      <div class="card-body md-body" style="padding:12px 18px">${marked.parse(briefingData.needsResponseMd)}</div>
-    </div>` : ''}
-
     <!-- Two charts -->
     <div class="two-col">
       <div class="card" id="card-priority">
@@ -1308,6 +1349,13 @@ function render(d) {
         <div class="card-body">${ticketRows(d.never_sprint, {showCreated: true})}</div>
       </div>
     </div>
+
+    <!-- Needs Team Response (from morning briefing) -->
+    ${briefingData && briefingData.needsResponseMd ? `
+    <div class="card" id="card-needs-response">
+      <div class="card-header">Needs Team Response <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px;text-transform:none;letter-spacing:0">from this morning's briefing</span></div>
+      <div class="card-body md-body" style="padding:12px 18px">${marked.parse(briefingData.needsResponseMd)}</div>
+    </div>` : ''}
   `;
 
   if (prioChart) prioChart.destroy();
