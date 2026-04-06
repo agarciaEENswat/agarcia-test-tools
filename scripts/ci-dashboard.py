@@ -1199,7 +1199,7 @@ function openTeamModal(teamName) {
 
 function openAccountModal(rawName) {
   const tickets     = accountTickets[rawName] || [];
-  const displayName = rawName.replace(/^\d{6,8}\s*[-–]\s*/, '');
+  const displayName = rawName === '__none__' ? 'No Account' : rawName.replace(/^\d{6,8}(?:\s*[-–]\s*|\s+)/, '');
   document.getElementById('modal-title').textContent = `${displayName} — ${tickets.length} ticket${tickets.length !== 1 ? 's' : ''}`;
   document.getElementById('modal-body').innerHTML = `
     <div class="modal-col-hdr"><span>Key</span><span>Priority</span><span>Summary</span><span>Assignee</span><span>Age</span></div>
@@ -1342,7 +1342,7 @@ function accountHeatHtml(accounts, unattributed, attributed) {
     </thead>
     <tbody>${accounts.map(a => {
       const pct         = Math.round(a.total / max * 100);
-      const displayName = a.account.replace(/^\d{6,8}\s*[-–]\s*/, '');
+      const displayName = a.account.replace(/^\d{6,8}(?:\s*[-–]\s*|\s+)/, '');
       const safeKey     = a.account.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       return `<tr style="cursor:pointer" onclick="openAccountModal('${safeKey}')" title="Click to view tickets">
         <td>
@@ -1357,7 +1357,7 @@ function accountHeatHtml(accounts, unattributed, attributed) {
       </tr>`;
     }).join('')}
     ${ua.total ? `
-    <tr style="opacity:.55">
+    <tr style="opacity:.55;cursor:pointer" onclick="openAccountModal('__none__')" title="Click to view tickets with no account">
       <td>
         <div style="display:flex;align-items:center;gap:8px">
           <span class="team-name" style="min-width:100px;max-width:180px;font-style:italic;color:var(--muted)">No Account</span>
