@@ -1,7 +1,7 @@
 #!/Users/adamgarcia/Scripts/venv/bin/python3
 """EEN Customer Impact Health — local dashboard with team breakdown."""
 
-import os, json, subprocess
+import os, json, re, subprocess
 from flask import Flask, jsonify, render_template_string
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -50,8 +50,24 @@ VMSSUP_COLUMNS = [
     ("Support Review",     ["Support Review", "Resolved Review"]),
 ]
 
+CI_HIST_BASE = (
+    '((project = EENS AND reporter not in (604fb2f681b82500682d022a)) '
+    'OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) '
+    'AND issuetype not in (Improvement, story) '
+    'AND priority not in (Low, Lowest)'
+)
+
 FIELDS_FULL  = ['summary','status','priority','assignee','duedate','labels',
-                'customfield_10500','created','project','sprint']
+                'customfield_10500','created','project','sprint','customfield_11063','description']
+
+def _extract_adf_text(content):
+    if isinstance(content, str): return content
+    if isinstance(content, dict):
+        if content.get('type') == 'text': return content.get('text', '')
+        if content.get('type') == 'hardBreak': return '\n'
+        if 'content' in content: return _extract_adf_text(content['content'])
+    if isinstance(content, list): return ''.join(_extract_adf_text(i) for i in content)
+    return ''
 FIELDS_SHORT = ['summary','status','priority','assignee','duedate','project','created']
 
 
@@ -105,6 +121,8 @@ def api_data():
     # Aggregations
     prio_counts  = defaultdict(int)
     team_data    = defaultdict(lambda: {'total': 0, 'highest': 0, 'high': 0, 'medium': 0})
+    assignee_load = defaultdict(lambda: {'ci': 0, 'ci_highest': 0, 'ci_high': 0})
+    acct_data     = defaultdict(lambda: {'total': 0, 'high': 0, 'medium': 0})
 
     for issue in all_issues:
         f    = issue['fields']
@@ -118,6 +136,29 @@ def api_data():
             team_data[team]['high'] += 1
         else:
             team_data[team]['medium'] += 1
+
+        # Assignee load
+        assignee = (f.get('assignee') or {}).get('displayName', 'Unassigned')
+        assignee_load[assignee]['ci'] += 1
+        if prio == 'Highest':   assignee_load[assignee]['ci_highest'] += 1
+        elif prio == 'High':    assignee_load[assignee]['ci_high'] += 1
+
+        # Account heat map
+        acct_raw = f.get('customfield_11063')
+        if isinstance(acct_raw, dict):
+            acct_name = acct_raw.get('value') or acct_raw.get('name') or ''
+        else:
+            acct_name = str(acct_raw).strip() if acct_raw else ''
+        # Fallback: parse from description when field is empty
+        if not acct_name:
+            desc_text = _extract_adf_text(f.get('description') or {})
+            m = re.search(r'(?:Master\s+)?Account:\s*\d+\s*[-–]\s*(.+)', desc_text, re.IGNORECASE)
+            if m:
+                acct_name = m.group(1).strip().split('\n')[0].strip()
+        if acct_name:
+            acct_data[acct_name]['total'] += 1
+            if prio in ('Highest', 'High'): acct_data[acct_name]['high'] += 1
+            else: acct_data[acct_name]['medium'] += 1
 
     # Age distribution buckets
     AGE_BUCKETS = [
@@ -190,6 +231,10 @@ def api_data():
         'due_soon':      sorted(due_soon, key=lambda x: x['duedate']),
         'punted':        punted,
         'never_sprint':  never_sprint[:20],
+        'assignee_load': sorted([{'name': k, **v} for k, v in assignee_load.items()],
+                                  key=lambda x: -x['ci']),
+        'account_heat':  sorted([{'account': k, **v} for k, v in acct_data.items()],
+                                  key=lambda x: -x['total'])[:15],
         'refreshed_at':  now.isoformat(),
     })
 
@@ -260,6 +305,35 @@ def api_vmssup():
         'stalled':      stalled,
         'refreshed_at': now.isoformat(),
     })
+
+
+@app.route('/api/reporting')
+def api_reporting():
+    now = datetime.now(timezone.utc)
+    opened = jira_search(
+        CI_HIST_BASE + ' AND created >= -28d',
+        ['created'], max_results=200
+    )
+    closed_issues = jira_search(
+        CI_HIST_BASE + ' AND statusCategory in (Done) AND resolved >= -28d',
+        ['resolutiondate'], max_results=200
+    )
+    weeks = []
+    for w in range(3, -1, -1):
+        end_dt   = now - timedelta(days=w * 7)
+        start_dt = now - timedelta(days=(w + 1) * 7)
+        end_d    = end_dt.date()
+        start_d  = start_dt.date()
+        label    = f'{start_d.strftime("%-m/%-d")}–{end_d.strftime("%-m/%-d")}'
+        o = sum(1 for i in opened
+                if start_d <= datetime.fromisoformat(
+                    i['fields']['created'].replace('Z', '+00:00')).date() < end_d)
+        c = sum(1 for i in closed_issues
+                if i['fields'].get('resolutiondate') and
+                start_d <= datetime.fromisoformat(
+                    i['fields']['resolutiondate'].replace('Z', '+00:00')).date() < end_d)
+        weeks.append({'label': label, 'opened': o, 'closed': c})
+    return jsonify({'throughput_weeks': weeks, 'refreshed_at': now.isoformat()})
 
 
 @app.route('/')
@@ -837,6 +911,16 @@ header h1 { font-size: 16px; font-weight: 600; }
   align-items: center;
   gap: 6px;
 }
+/* Reporting section */
+.section-divider {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+}
 </style>
 </head>
 <body>
@@ -915,6 +999,8 @@ let teamsTickets   = {};   // team name → ticket list
 let otherTeamNames = [];   // team names rolled into "Other"
 let ciData         = null;
 let vmssupData     = null;
+let reportingData  = null;
+let throughputChart = null;
 let currentTab     = 'ci';
 
 function jiraSearch() {
@@ -996,7 +1082,9 @@ function updateNeedsResponseCard() {
   `;
   const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
   if (saved['card-needs-response']) card.style.height = saved['card-needs-response'] + 'px';
-  app.appendChild(card);
+  const reportingSection = document.getElementById('reporting-section');
+  if (reportingSection) app.insertBefore(card, reportingSection);
+  else app.appendChild(card);
   // Watch the new card for resize
   const ro = new ResizeObserver(() => { let t; clearTimeout(t); t = setTimeout(saveSizes, 400); });
   ro.observe(card);
@@ -1179,6 +1267,201 @@ function outOfSpecHtml(tickets) {
       </tr>`).join('')}
     </tbody>
   </table>`;
+}
+
+function accountHeatHtml(accounts) {
+  if (!accounts || !accounts.length) return `<div class="empty">No account data — most CI tickets may lack account info.</div>`;
+  const max = Math.max(...accounts.map(a => a.total), 1);
+  return `<table class="team-table">
+    <thead><tr>
+      <th>Account</th>
+      <th class="num" style="color:var(--orange)">H+</th>
+      <th class="num" style="color:#4a9eff">Med</th>
+      <th class="num">Total</th>
+    </tr></thead>
+    <tbody>${accounts.map(a => {
+      const pct = Math.round(a.total / max * 100);
+      return `<tr>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="team-name" style="min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.account}">${a.account}</span>
+            <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${pct}%"></div></div>
+          </div>
+        </td>
+        <td class="num num-high">${a.high || 0}</td>
+        <td class="num num-med">${a.medium || 0}</td>
+        <td class="num num-total">${a.total}</td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
+}
+
+function engineerLoadHtml(loadList, maxLoad) {
+  if (!loadList.length) return `<div class="empty">No data.</div>`;
+  return `<table class="team-table">
+    <thead><tr>
+      <th>Engineer</th>
+      <th class="num" style="color:#4a9eff">CI</th>
+      <th class="num" style="color:var(--orange)">VMSSUP</th>
+      <th class="num">Total</th>
+    </tr></thead>
+    <tbody>${loadList.map(e => {
+      const pct = Math.round(e.total / maxLoad * 100);
+      return `<tr>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="team-name" style="min-width:80px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name.split(' ').slice(0,2).join(' ')}</span>
+            <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${pct}%;background:var(--purple)"></div></div>
+          </div>
+        </td>
+        <td class="num" style="color:#4a9eff">${e.ci}</td>
+        <td class="num" style="color:var(--orange)">${e.vmssup}</td>
+        <td class="num num-total">${e.total}</td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
+}
+
+function pipelineHealthHtml(stageStats, cols) {
+  const avgs = cols.map(c => stageStats[c] && stageStats[c].count ? Math.round(stageStats[c].total / stageStats[c].count) : 0);
+  const maxAvg = Math.max(...avgs, 1);
+  return `<table class="team-table">
+    <thead><tr>
+      <th>Stage</th>
+      <th class="num">Tickets</th>
+      <th class="num">Avg Age</th>
+    </tr></thead>
+    <tbody>${cols.map((col, idx) => {
+      const s = stageStats[col] || {total: 0, count: 0};
+      const avg = avgs[idx];
+      const pct = Math.round(avg / maxAvg * 100);
+      const color = avg > 14 ? 'var(--red)' : avg > 7 ? 'var(--orange)' : 'var(--green)';
+      const pillBg = avg > 14 ? 'rgba(248,81,73,.15)' : avg > 7 ? 'rgba(240,136,62,.15)' : 'rgba(63,185,80,.15)';
+      return `<tr>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="team-name" style="min-width:110px">${col}</span>
+            <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          </div>
+        </td>
+        <td class="num" style="color:var(--muted)">${s.count}</td>
+        <td class="num"><span class="age-pill" style="background:${pillBg};color:${color}">${avg}d</span></td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>`;
+}
+
+function renderReporting(ci, vmssup, rep) {
+  if (!rep || !ci || !vmssup) return;
+  const app = document.getElementById('app');
+  if (!app) return;
+
+  // Engineer load: merge CI assignees with VMSSUP assignees
+  const vmssupByName = {};
+  for (const a of vmssup.assignees) vmssupByName[a.name] = a.total;
+  const loadMap = {};
+  for (const a of (ci.assignee_load || [])) {
+    loadMap[a.name] = {ci: a.ci, vmssup: vmssupByName[a.name] || 0};
+  }
+  for (const [name, cnt] of Object.entries(vmssupByName)) {
+    if (!loadMap[name]) loadMap[name] = {ci: 0, vmssup: cnt};
+  }
+  const loadList = Object.entries(loadMap)
+    .filter(([n]) => n !== 'Unassigned')
+    .map(([name, d]) => ({name, ci: d.ci, vmssup: d.vmssup, total: d.ci + d.vmssup}))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 15);
+  const maxLoad = Math.max(...loadList.map(e => e.total), 1);
+
+  // Pipeline stage stats from vmssupData
+  const stageStats = {};
+  for (const col of vmssup.display_cols) stageStats[col] = {total: 0, count: 0};
+  for (const a of vmssup.assignees) {
+    for (const col of vmssup.display_cols) {
+      for (const t of (a.columns[col] || [])) {
+        stageStats[col].total += t.age_days;
+        stageStats[col].count++;
+      }
+    }
+  }
+
+  // Throughput
+  const weeks = rep.throughput_weeks || [];
+  const weekLabels  = weeks.map(w => w.label);
+  const openedVals  = weeks.map(w => w.opened);
+  const closedVals  = weeks.map(w => w.closed);
+
+  const section = document.createElement('div');
+  section.id = 'reporting-section';
+  section.innerHTML = `
+    <div class="section-divider">Reporting</div>
+
+    <div class="card" id="card-throughput">
+      <div class="card-header">Throughput — Opened vs Closed (Last 4 Weeks)</div>
+      <div class="card-body">
+        <div class="chart-wrap" style="padding:8px 0">
+          <canvas id="throughput-chart" style="max-height:220px;width:100%"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="card" id="card-account-heat">
+        <div class="card-header">Account Heat Map — Top Accounts by Open CI Tickets</div>
+        <div class="card-body">${accountHeatHtml(ci.account_heat)}</div>
+      </div>
+      <div class="card" id="card-engineer-load">
+        <div class="card-header">Engineer Load — CI + VMSSUP Combined</div>
+        <div class="card-body">${engineerLoadHtml(loadList, maxLoad)}</div>
+      </div>
+    </div>
+
+    <div class="card" id="card-pipeline">
+      <div class="card-header">VMSSUP Pipeline Health — Avg Ticket Age by Stage</div>
+      <div class="card-body">${pipelineHealthHtml(stageStats, vmssup.display_cols)}</div>
+    </div>
+  `;
+  app.appendChild(section);
+
+  // Draw throughput chart
+  if (throughputChart) { throughputChart.destroy(); throughputChart = null; }
+  const ctx = document.getElementById('throughput-chart');
+  if (ctx) {
+    throughputChart = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: weekLabels,
+        datasets: [
+          { label: 'Opened', data: openedVals, backgroundColor: 'rgba(248,81,73,0.55)', borderColor: '#f85149', borderWidth: 1, borderRadius: 4 },
+          { label: 'Closed', data: closedVals, backgroundColor: 'rgba(63,185,80,0.55)',  borderColor: '#3fb950', borderWidth: 1, borderRadius: 4 },
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { labels: { color: '#c9d1d9', font: { size: 11 } } },
+          tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.y}` } },
+        },
+        scales: {
+          x: { ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: '#30363d' } },
+          y: { ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: '#30363d' }, beginAtZero: true, precision: 0 },
+        }
+      }
+    });
+  }
+
+  // Restore sizes for new cards then start watching
+  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  ['card-throughput','card-account-heat','card-engineer-load','card-pipeline'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const h = saved[id] || CARD_DEFAULTS[id];
+    if (h) el.style.height = h + 'px';
+  });
 }
 
 function renderVmssup(d) {
@@ -1379,15 +1662,19 @@ function render(d) {
   });
 }
 
-const CARD_IDS = ['card-needs-response','card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint'];
+const CARD_IDS = ['card-needs-response','card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint','card-throughput','card-account-heat','card-engineer-load','card-pipeline'];
 const CARD_DEFAULTS = {
-  'card-priority':    378,
-  'card-team':        379,
-  'card-age-dist':    369,
-  'card-out-of-spec': 369,
-  'card-due-soon':    420,
-  'card-punted':      420,
-  'card-never-sprint':420,
+  'card-priority':     378,
+  'card-team':         379,
+  'card-age-dist':     369,
+  'card-out-of-spec':  369,
+  'card-due-soon':     420,
+  'card-punted':       420,
+  'card-never-sprint': 420,
+  'card-throughput':   320,
+  'card-account-heat': 420,
+  'card-engineer-load':420,
+  'card-pipeline':     300,
 };
 const STORAGE_KEY = 'ci-dash-sizes';
 
@@ -1428,11 +1715,14 @@ async function load() {
   btn.classList.add('spinning');
   btn.disabled = true;
   try {
-    const [ciResp, vmssupResp] = await Promise.all([fetch('/api/data'), fetch('/api/vmssup')]);
-    ciData     = await ciResp.json();
-    vmssupData = await vmssupResp.json();
+    const [ciResp, vmssupResp, repResp] = await Promise.all([fetch('/api/data'), fetch('/api/vmssup'), fetch('/api/reporting')]);
+    ciData        = await ciResp.json();
+    vmssupData    = await vmssupResp.json();
+    reportingData = await repResp.json();
     render(ciData);
     renderVmssup(vmssupData);
+    renderReporting(ciData, vmssupData, reportingData);
+    updateNeedsResponseCard();
     restoreSizes();
     watchSizes();
     const active = currentTab === 'ci' ? ciData : vmssupData;
