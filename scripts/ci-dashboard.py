@@ -1370,6 +1370,15 @@ function render(d) {
 }
 
 const CARD_IDS = ['card-needs-response','card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint'];
+const CARD_DEFAULTS = {
+  'card-priority':    375,
+  'card-team':        374,
+  'card-age-dist':    369,
+  'card-out-of-spec': 369,
+  'card-due-soon':    415,
+  'card-punted':      416,
+  'card-never-sprint':417,
+};
 const STORAGE_KEY = 'ci-dash-sizes';
 
 function saveSizes() {
@@ -1385,7 +1394,9 @@ function restoreSizes() {
   const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
   CARD_IDS.forEach(id => {
     const el = document.getElementById(id);
-    if (el && saved[id]) el.style.height = saved[id] + 'px';
+    if (!el) return;
+    const h = saved[id] || CARD_DEFAULTS[id];
+    if (h) el.style.height = h + 'px';
   });
 }
 
