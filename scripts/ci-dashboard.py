@@ -1,0 +1,857 @@
+#!/Users/adamgarcia/Scripts/venv/bin/python3
+"""EEN Customer Impact Health — local dashboard with team breakdown."""
+
+import os, json, subprocess
+from flask import Flask, jsonify, render_template_string
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+
+app = Flask(__name__)
+
+# Load credentials from shell if not already in environment
+def _load_env():
+    result = subprocess.run(
+        ['zsh', '-c', 'source ~/.zshrc 2>/dev/null && env'],
+        capture_output=True, text=True
+    )
+    for line in result.stdout.splitlines():
+        if '=' in line:
+            k, _, v = line.partition('=')
+            if k in ('JIRA_EMAIL', 'JIRA_API_TOKEN') and not os.environ.get(k):
+                os.environ[k] = v
+
+_load_env()
+
+EMAIL = os.environ.get('JIRA_EMAIL', '')
+TOKEN = os.environ.get('JIRA_API_TOKEN', '')
+BASE  = 'https://eagleeyenetworks.atlassian.net'
+
+CI_BASE = (
+    '((project = EENS AND reporter not in (604fb2f681b82500682d022a)) '
+    'OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) '
+    'AND issuetype not in (Improvement, story) '
+    'AND statusCategory not in (Done) '
+    'AND priority not in (Low, Lowest) '
+    'AND (duedate is EMPTY OR duedate <= now())'
+)
+
+FIELDS_FULL  = ['summary','status','priority','assignee','duedate','labels',
+                'customfield_10500','created','project','sprint']
+FIELDS_SHORT = ['summary','status','priority','assignee','duedate','project','created']
+
+
+def jira_search(jql, fields, max_results=100):
+    issues, next_token = [], None
+    while True:
+        body = {'jql': jql, 'maxResults': max_results, 'fields': fields}
+        if next_token:
+            body['nextPageToken'] = next_token
+        r = subprocess.run(
+            ['curl', '-s', '-u', f'{EMAIL}:{TOKEN}',
+             '-X', 'POST', f'{BASE}/rest/api/3/search/jql',
+             '-H', 'Content-Type: application/json',
+             '-d', json.dumps(body)],
+            capture_output=True, text=True
+        )
+        d = json.loads(r.stdout)
+        batch = d.get('issues', d.get('values', []))
+        issues.extend(batch)
+        next_token = d.get('nextPageToken')
+        if not next_token or not batch:
+            break
+    return issues
+
+
+def fmt_issue(i, now):
+    f = i['fields']
+    created = datetime.fromisoformat(f['created'].replace('Z', '+00:00'))
+    age = (now - created).days
+    return {
+        'key':      i['key'],
+        'summary':  f.get('summary', ''),
+        'status':   (f.get('status') or {}).get('name', ''),
+        'priority': (f.get('priority') or {}).get('name', ''),
+        'assignee': (f.get('assignee') or {}).get('displayName', 'Unassigned'),
+        'duedate':       f.get('duedate') or '',
+        'project':       (f.get('project') or {}).get('key', ''),
+        'age_days':      age,
+        'created_date':  created.strftime('%Y-%m-%d'),
+        'url':           f'{BASE}/browse/{i["key"]}',
+    }
+
+
+@app.route('/api/data')
+def api_data():
+    now = datetime.now(timezone.utc)
+
+    # All CI tickets (paginated)
+    all_issues = jira_search(CI_BASE, FIELDS_FULL)
+
+    # Aggregations
+    prio_counts  = defaultdict(int)
+    team_data    = defaultdict(lambda: {'total': 0, 'highest': 0, 'high': 0, 'medium': 0})
+
+    for issue in all_issues:
+        f    = issue['fields']
+        prio = (f.get('priority') or {}).get('name', 'Medium')
+        team = (f.get('customfield_10500') or {}).get('name', 'Unassigned')
+        prio_counts[prio] += 1
+        team_data[team]['total'] += 1
+        if prio == 'Highest':
+            team_data[team]['highest'] += 1
+        elif prio == 'High':
+            team_data[team]['high'] += 1
+        else:
+            team_data[team]['medium'] += 1
+
+    # Age distribution buckets
+    AGE_BUCKETS = [
+        ("< 1 week",   0,   7),
+        ("1–2 weeks",  7,   14),
+        ("2–4 weeks",  14,  28),
+        ("1–3 months", 28,  90),
+        ("3–6 months", 90,  180),
+        ("6+ months",  180, 99999),
+    ]
+    age_dist = {lbl: {'total': 0, 'high': 0, 'medium': 0} for lbl, _, _ in AGE_BUCKETS}
+
+    # Focused filter queries (computed from already-fetched data)
+    three_days   = (now + timedelta(days=3)).date()
+    due_soon     = []
+    punted       = []
+    never_sprint = []
+    out_of_spec  = []
+
+    for issue in all_issues:
+        f    = issue['fields']
+        prio = (f.get('priority') or {}).get('name', 'Medium')
+        fmted = fmt_issue(issue, now)
+        age  = fmted['age_days']
+
+        # Age distribution
+        for lbl, lo, hi in AGE_BUCKETS:
+            if lo <= age < hi:
+                age_dist[lbl]['total'] += 1
+                if prio in ('Highest', 'High'):
+                    age_dist[lbl]['high'] += 1
+                else:
+                    age_dist[lbl]['medium'] += 1
+                break
+
+        # Out of spec
+        if (prio == 'Highest' and age > 7) or (prio == 'High' and age > 14) or (age > 28):
+            out_of_spec.append(fmted)
+
+        dd = f.get('duedate')
+        if dd and dd <= str(three_days):
+            due_soon.append(fmted)
+        if 'repeatedly-punted' in (f.get('labels') or []):
+            punted.append(fmted)
+        sprint_val = f.get('sprint')
+        if not sprint_val:
+            never_sprint.append(fmted)
+
+    out_of_spec.sort(key=lambda x: (
+        {'Highest': 0, 'High': 1}.get(x['priority'], 2), -x['age_days']
+    ))
+
+    never_sprint.sort(key=lambda x: x['age_days'], reverse=True)
+
+    teams_sorted = sorted(team_data.items(), key=lambda x: -x[1]['total'])
+
+    # Build per-team ticket lists for inline panel
+    teams_tickets = defaultdict(list)
+    for issue in all_issues:
+        team = (issue['fields'].get('customfield_10500') or {}).get('name', 'Unassigned')
+        teams_tickets[team].append(fmt_issue(issue, now))
+
+    return jsonify({
+        'total':         len(all_issues),
+        'prio_counts':   dict(prio_counts),
+        'teams':         [{'name': k, **v} for k, v in teams_sorted],
+        'teams_tickets': {k: sorted(v, key=lambda x: -x['age_days']) for k, v in teams_tickets.items()},
+        'age_dist':      [{'label': lbl, **age_dist[lbl]} for lbl, _, _ in AGE_BUCKETS],
+        'out_of_spec':   out_of_spec,
+        'due_soon':      sorted(due_soon, key=lambda x: x['duedate']),
+        'punted':        punted,
+        'never_sprint':  never_sprint[:20],
+        'refreshed_at':  now.isoformat(),
+    })
+
+
+@app.route('/')
+def index():
+    return render_template_string(HTML)
+
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Customer Impact Health</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --surface2: #1c2128;
+  --border:   #30363d;
+  --text:     #c9d1d9;
+  --muted:    #8b949e;
+  --blue:     #58a6ff;
+  --green:    #3fb950;
+  --red:      #f85149;
+  --orange:   #f0883e;
+  --yellow:   #d29922;
+  --purple:   #bc8cff;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 16px; font-weight: 600; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+#refresh-time { font-size: 12px; color: var(--muted); }
+#refresh-btn {
+  padding: 5px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+#refresh-btn:hover { border-color: var(--blue); }
+#refresh-btn.spinning { color: var(--muted); cursor: not-allowed; }
+
+.wrapper { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+
+/* Stat tiles */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color .15s;
+}
+.stat-tile:hover { border-color: var(--blue); }
+.stat-tile .val {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+.stat-tile .lbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.val.total   { color: var(--blue); }
+.val.highest { color: var(--red); }
+.val.high    { color: var(--orange); }
+.val.medium  { color: #4a9eff; }
+.val.due     { color: var(--yellow); }
+
+/* Two-column row */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  resize: vertical;
+  min-height: 120px;
+}
+.card-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  flex-shrink: 0;
+  user-select: none;
+}
+.card-body { padding: 14px; flex: 1; overflow-y: auto; min-height: 0; }
+
+/* Chart */
+.chart-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+#priority-chart { max-width: 220px; max-height: 220px; flex-shrink: 0; }
+#team-chart { max-width: 220px; max-height: 220px; flex-shrink: 0; }
+.legend { width: 100%; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; }
+.legend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  text-decoration: none;
+  color: var(--text);
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.legend-row:hover { background: var(--surface2); }
+.legend-row .dot-label { display: flex; align-items: center; gap: 8px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.legend-count { font-weight: 600; color: var(--text); }
+
+/* Team table */
+.team-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.team-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  padding: 0 8px 8px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.team-table th.num, .team-table td.num { text-align: right; }
+.team-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.team-table tr:last-child td { border-bottom: none; }
+.team-table tr:hover td { background: var(--surface2); }
+.team-table tbody tr { cursor: pointer; }
+.team-name { color: var(--text); font-weight: 500; }
+.unassigned { color: var(--muted); font-style: italic; }
+.bar-wrap { display: flex; align-items: center; gap: 8px; }
+.bar-bg { flex: 1; height: 6px; background: var(--border); border-radius: 3px; min-width: 60px; }
+.bar-fill { height: 100%; border-radius: 3px; background: var(--blue); transition: width .3s; }
+.num-total { font-weight: 700; color: var(--text); min-width: 28px; text-align: right; }
+.num-high { color: var(--orange); min-width: 24px; text-align: right; }
+.num-med  { color: #4a9eff; min-width: 24px; text-align: right; }
+
+/* Three-column row */
+.three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+
+/* Ticket list */
+.ticket-list { display: flex; flex-direction: column; gap: 1px; }
+.ticket-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.ticket-item:last-child { border-bottom: none; }
+.ticket-key {
+  color: var(--blue);
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.ticket-key:hover { text-decoration: underline; }
+.prio-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.prio-Highest { background: rgba(248,81,73,.2); color: var(--red); }
+.prio-High    { background: rgba(240,136,62,.2); color: var(--orange); }
+.prio-Medium  { background: rgba(88,166,255,.15); color: var(--blue); }
+.ticket-summary { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticket-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 8px 0; }
+
+/* Age distribution */
+.age-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.age-table td { padding: 5px 8px; vertical-align: middle; }
+.age-table tr:hover td { background: var(--surface2); }
+.age-label { color: var(--muted); white-space: nowrap; width: 90px; }
+.age-bar-cell { width: 100%; }
+.age-bar-bg { background: var(--border); border-radius: 3px; height: 8px; position: relative; }
+.age-bar-high { background: var(--orange); border-radius: 3px 0 0 3px; height: 100%; float: left; }
+.age-bar-med  { background: var(--blue);   border-radius: 0; height: 100%; float: left; }
+.age-count { color: var(--text); font-weight: 600; text-align: right; white-space: nowrap; width: 36px; }
+.age-breakdown { color: var(--muted); font-size: 11px; white-space: nowrap; width: 140px; }
+
+/* Out of spec */
+.oos-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.oos-table th {
+  text-align: left; padding: 0 8px 7px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.oos-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.oos-table tr:last-child td { border-bottom: none; }
+.oos-table tr:hover td { background: var(--surface2); }
+.age-pill {
+  font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+  background: rgba(248,81,73,.15); color: var(--red); white-space: nowrap;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--muted);
+  font-size: 14px;
+  gap: 10px;
+}
+.spinner {
+  width: 16px; height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.6);
+  z-index: 100;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 60px 24px;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 860px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-title { font-size: 14px; font-weight: 600; }
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { overflow-y: auto; padding: 4px 0; }
+.modal-ticket {
+  display: grid;
+  grid-template-columns: 100px 70px 1fr 130px 60px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.modal-ticket:last-child { border-bottom: none; }
+.modal-ticket:hover { background: var(--surface2); }
+.modal-col-hdr {
+  display: grid;
+  grid-template-columns: 100px 70px 1fr 130px 60px;
+  gap: 10px;
+  padding: 8px 18px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Customer Impact Health</h1>
+  <div class="header-right">
+    <span id="refresh-time">Loading…</span>
+    <button id="refresh-btn" onclick="load()">Refresh</button>
+  </div>
+</header>
+
+<div class="wrapper" id="app">
+  <div class="loading"><div class="spinner"></div> Loading JIRA data…</div>
+</div>
+
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title"></span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const JIRA_NAV = 'https://eagleeyenetworks.atlassian.net/issues/?jql=';
+const CI_BASE  = '((project = EENS AND reporter not in (604fb2f681b82500682d022a)) OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) AND issuetype not in (Improvement, story) AND statusCategory not in (Done) AND priority not in (Low, Lowest) AND (duedate is EMPTY OR duedate <= now())';
+
+let prioChart      = null;
+let teamChart      = null;
+let teamData       = [];   // stored so chart onClick can reference by index
+let teamsTickets   = {};   // team name → ticket list
+let otherTeamNames = [];   // team names rolled into "Other"
+
+function jiraLink(extraJql) {
+  const jql = extraJql ? CI_BASE + ' AND ' + extraJql : CI_BASE;
+  return JIRA_NAV + encodeURIComponent(jql);
+}
+
+const PRIO_COLORS = {
+  'Highest': '#f85149',
+  'High':    '#f0883e',
+  'Medium':  '#4a9eff',
+};
+
+const TEAM_PALETTE = [
+  '#58a6ff','#3fb950','#f0883e','#bc8cff','#f85149',
+  '#d29922','#39d353','#ff7b72','#79c0ff','#8b949e',
+];
+
+function openTeamModal(teamName) {
+  let tickets;
+  if (teamName === 'Other') {
+    tickets = otherTeamNames.flatMap(n => teamsTickets[n] || []);
+    tickets.sort((a, b) => b.age_days - a.age_days);
+  } else {
+    tickets = teamsTickets[teamName] || [];
+  }
+  document.getElementById('modal-title').textContent = `${teamName} — ${tickets.length} ticket${tickets.length !== 1 ? 's' : ''}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-col-hdr"><span>Key</span><span>Priority</span><span>Summary</span><span>Assignee</span><span>Age</span></div>
+    ${tickets.map(t => `
+      <div class="modal-ticket">
+        <a class="ticket-key" href="${t.url}" target="_blank">${t.key}</a>
+        ${prioBadge(t.priority)}
+        <span class="ticket-summary" title="${t.summary}">${t.summary}</span>
+        <span style="color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.assignee}</span>
+        <span style="color:var(--muted);font-size:11px">${t.age_days}d</span>
+      </div>`).join('')}
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function closeModal(evt) {
+  if (evt && evt.target !== document.getElementById('modal-overlay')) return;
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+function formatRefreshTime(iso) {
+  const d = new Date(iso);
+  const local = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', timeZoneName: 'short'});
+  const utcH  = String(d.getUTCHours()).padStart(2,'0');
+  const utcM  = String(d.getUTCMinutes()).padStart(2,'0');
+  return `${local} (${utcH}:${utcM} UTC)`;
+}
+
+function prioBadge(p) {
+  return `<span class="prio-badge prio-${p}">${p}</span>`;
+}
+
+function ticketRows(tickets, {showDue=false, showCreated=false}={}) {
+  if (!tickets.length) return `<div class="empty">None.</div>`;
+  return `<div class="ticket-list">${tickets.map(t => `
+    <div class="ticket-item">
+      <a class="ticket-key" href="${t.url}" target="_blank">${t.key}</a>
+      ${prioBadge(t.priority)}
+      <span class="ticket-summary" title="${t.summary}">${t.summary}</span>
+      <span class="ticket-meta">${
+        showDue && t.duedate ? 'due ' + t.duedate :
+        showCreated ? t.created_date :
+        t.assignee !== 'Unassigned' ? t.assignee.split(' ')[0] : '—'
+      }</span>
+    </div>`).join('')}</div>`;
+}
+
+function makeDoughnut(canvasId, labels, vals, colors, onClickFn) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  return new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: vals, backgroundColor: colors, borderWidth: 2, borderColor: '#161b22' }] },
+    options: {
+      cutout: '60%',
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => ` ${c.label}: ${c.parsed}` } },
+      },
+      onClick: (evt, elements) => { if (elements.length) onClickFn(elements[0].index); },
+      onHover:  (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
+    }
+  });
+}
+
+function legendHtml(labels, colors, counts, linkFn) {
+  return labels.map((lbl, i) => `
+    <a class="legend-row" href="${linkFn(lbl)}" target="_blank">
+      <div class="dot-label">
+        <div class="legend-dot" style="background:${colors[i]}"></div>
+        <span>${lbl}</span>
+      </div>
+      <span class="legend-count">${counts[i]}</span>
+    </a>`).join('');
+}
+
+function ageDistHtml(buckets) {
+  const max = Math.max(...buckets.map(b => b.total), 1);
+  return `<table class="age-table">${buckets.map(b => {
+    const highPct = Math.round(b.high / max * 100);
+    const medPct  = Math.round(b.medium / max * 100);
+    const parts = [];
+    if (b.high)   parts.push(`H:${b.high}`);
+    if (b.medium) parts.push(`M:${b.medium}`);
+    return `<tr>
+      <td class="age-label">${b.label}</td>
+      <td class="age-bar-cell">
+        <div class="age-bar-bg" style="overflow:hidden">
+          <div class="age-bar-high" style="width:${highPct}%"></div>
+          <div class="age-bar-med"  style="width:${medPct}%"></div>
+        </div>
+      </td>
+      <td class="age-count">${b.total}</td>
+      <td class="age-breakdown">${parts.join(', ') || '—'}</td>
+    </tr>`;
+  }).join('')}</table>`;
+}
+
+function outOfSpecHtml(tickets) {
+  if (!tickets.length) return `<div class="empty">None — all within SLA.</div>`;
+  return `<table class="oos-table">
+    <thead><tr><th>Key</th><th>Priority</th><th>Age</th><th>Assignee</th><th>Summary</th></tr></thead>
+    <tbody>${tickets.map(t => `
+      <tr>
+        <td><a class="ticket-key" href="${t.url}" target="_blank">${t.key}</a></td>
+        <td>${prioBadge(t.priority)}</td>
+        <td><span class="age-pill">${t.age_days}d</span></td>
+        <td style="color:var(--muted);font-size:11px;white-space:nowrap">${t.assignee.split(' ')[0]}</td>
+        <td class="ticket-summary" title="${t.summary}">${t.summary}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function render(d) {
+  const p       = d.prio_counts;
+  const highest = p['Highest'] || 0;
+  const high    = p['High']    || 0;
+  const medium  = p['Medium']  || 0;
+
+  // Store globally for click handlers
+  teamsTickets = d.teams_tickets;
+
+  otherTeamNames = [];
+  const displayTeams = d.teams;
+  teamData = displayTeams;
+
+  const prioLabels  = ['Highest','High','Medium'].filter(k => p[k]);
+  const prioVals    = prioLabels.map(k => p[k]);
+  const prioColors  = prioLabels.map(k => PRIO_COLORS[k]);
+
+  const teamLabels  = displayTeams.map(t => t.name);
+  const teamVals    = displayTeams.map(t => t.total);
+  const teamColors  = displayTeams.map((_, i) => TEAM_PALETTE[i % TEAM_PALETTE.length]);
+
+  document.getElementById('app').innerHTML = `
+    <!-- Stats -->
+    <div class="stats-row">
+      <a class="stat-tile" href="${jiraLink()}" target="_blank"><div class="val total">${d.total}</div><div class="lbl">Total CI</div></a>
+      <a class="stat-tile" href="${jiraLink('priority = Highest')}" target="_blank"><div class="val highest">${highest}</div><div class="lbl">Highest</div></a>
+      <a class="stat-tile" href="${jiraLink('priority = High')}" target="_blank"><div class="val high">${high}</div><div class="lbl">High</div></a>
+      <a class="stat-tile" href="${jiraLink('priority = Medium')}" target="_blank"><div class="val medium">${medium}</div><div class="lbl">Medium</div></a>
+      <a class="stat-tile" href="${jiraLink('duedate <= 3d AND duedate is not EMPTY')}" target="_blank"><div class="val due">${d.due_soon.length}</div><div class="lbl">Due ≤3 days</div></a>
+    </div>
+
+    <!-- Two charts -->
+    <div class="two-col">
+      <div class="card" id="card-priority">
+        <div class="card-header">By Priority</div>
+        <div class="card-body">
+          <div class="chart-wrap">
+            <canvas id="priority-chart"></canvas>
+            <div class="legend">
+              ${legendHtml(prioLabels, prioColors, prioVals, lbl => jiraLink('priority = ' + lbl))}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="card-team">
+        <div class="card-header">By Engineering Team</div>
+        <div class="card-body">
+          <div class="chart-wrap">
+            <canvas id="team-chart"></canvas>
+            <div class="legend">
+              ${teamLabels.map((lbl, i) => {
+                const pct = Math.round(teamVals[i] / d.total * 100);
+                return `
+                <div class="legend-row" style="cursor:pointer" onclick="openTeamModal('${lbl.replace(/'/g,"\\'")}')">
+                  <div class="dot-label">
+                    <div class="legend-dot" style="background:${teamColors[i]}"></div>
+                    <span>${lbl}</span>
+                  </div>
+                  <span class="legend-count">${teamVals[i]} <span style="color:var(--muted);font-weight:400;font-size:11px">(${pct}%)</span></span>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Age dist + Out of spec -->
+    <div class="two-col">
+      <div class="card" id="card-age-dist">
+        <div class="card-header">Age Distribution</div>
+        <div class="card-body">
+          ${ageDistHtml(d.age_dist)}
+        </div>
+      </div>
+      <div class="card" id="card-out-of-spec">
+        <div class="card-header">Out of Spec (${d.out_of_spec.length})</div>
+        <div class="card-body">
+          ${outOfSpecHtml(d.out_of_spec)}
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters row -->
+    <div class="three-col">
+      <div class="card" id="card-due-soon">
+        <div class="card-header">Due Within 3 Days (${d.due_soon.length})</div>
+        <div class="card-body">${ticketRows(d.due_soon, {showDue: true})}</div>
+      </div>
+      <div class="card" id="card-punted">
+        <div class="card-header">Repeatedly Punted (${d.punted.length})</div>
+        <div class="card-body">${ticketRows(d.punted, {showCreated: true})}</div>
+      </div>
+      <div class="card" id="card-never-sprint">
+        <div class="card-header">Never in a Sprint (${d.never_sprint.length}${d.never_sprint.length===20?'+':''})</div>
+        <div class="card-body">${ticketRows(d.never_sprint, {showCreated: true})}</div>
+      </div>
+    </div>
+  `;
+
+  if (prioChart) prioChart.destroy();
+  prioChart = makeDoughnut('priority-chart', prioLabels, prioVals, prioColors, (i) => {
+    window.open(jiraLink('priority = ' + prioLabels[i]), '_blank');
+  });
+
+  if (teamChart) teamChart.destroy();
+  teamChart = makeDoughnut('team-chart', teamLabels, teamVals, teamColors, (i) => {
+    openTeamModal(teamData[i].name);
+  });
+}
+
+const CARD_IDS = ['card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint'];
+const STORAGE_KEY = 'ci-dash-sizes';
+
+function saveSizes() {
+  const sizes = {};
+  CARD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) sizes[id] = el.offsetHeight;
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(sizes));
+}
+
+function restoreSizes() {
+  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  CARD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && saved[id]) el.style.height = saved[id] + 'px';
+  });
+}
+
+function watchSizes() {
+  let timer;
+  const ro = new ResizeObserver(() => {
+    clearTimeout(timer);
+    timer = setTimeout(saveSizes, 400);
+  });
+  CARD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) ro.observe(el);
+  });
+}
+
+async function load() {
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = 'Loading…';
+  btn.classList.add('spinning');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/data');
+    const d = await r.json();
+    render(d);
+    restoreSizes();
+    watchSizes();
+    document.getElementById('refresh-time').textContent = 'Refreshed ' + formatRefreshTime(d.refreshed_at);
+  } catch(e) {
+    document.getElementById('app').innerHTML = `<div class="loading" style="color:var(--red)">Error loading data: ${e}</div>`;
+  } finally {
+    btn.textContent = 'Refresh';
+    btn.classList.remove('spinning');
+    btn.disabled = false;
+  }
+}
+
+load();
+setInterval(load, 5 * 60 * 1000); // auto-refresh every 5 min
+</script>
+</body>
+</html>
+"""
+
+if __name__ == '__main__':
+    port = int(os.environ.get('CI_DASH_PORT', 8081))
+    print(f'\n  Customer Impact Health → http://localhost:{port}\n')
+    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
