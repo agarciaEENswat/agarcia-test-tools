@@ -4,6 +4,33 @@ Internal tools for Eagle Eye Networks support and engineering operations — das
 
 ---
 
+## Quick Start — Dashboard Only
+
+Just want the dashboard? This is all you need:
+
+```bash
+# 1. Clone
+git clone https://github.com/agarciaEENswat/agarcia-test-tools.git
+cd agarcia-test-tools
+
+# 2. Install Flask
+pip3 install flask
+
+# 3. Add JIRA credentials to ~/.zshrc
+echo "export JIRA_EMAIL='your-email@een.com'" >> ~/.zshrc
+echo "export JIRA_API_TOKEN='your-api-token'" >> ~/.zshrc
+source ~/.zshrc
+
+# 4. Run
+python3 scripts/ci-dashboard.py
+```
+
+Then open **http://localhost:8081**.
+
+To generate a JIRA API token: [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens) → **Create API token**.
+
+---
+
 ## Prerequisites
 
 All tools in this repo authenticate against JIRA using environment variables. Add these to your `~/.zshrc` or `~/.bashrc`:

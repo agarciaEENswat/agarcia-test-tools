@@ -1,4 +1,4 @@
-#!/Users/adamgarcia/Scripts/venv/bin/python3
+#!/usr/bin/env python3
 """EEN Customer Impact Health — local dashboard with team breakdown."""
 
 import os, json, re, subprocess
