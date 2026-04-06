@@ -1292,6 +1292,17 @@ function accountHeatHtml(accounts, unattributed) {
       <th class="num" style="color:#4a9eff">Med</th>
       <th class="num">Total</th>
     </tr></thead>
+    <thead style="position:sticky;top:0;background:var(--surface);z-index:1">
+      <tr style="border-bottom:2px solid var(--border)">
+        <td style="padding:7px 8px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+          All CI Tickets
+          <span style="font-weight:400;color:${attrPct>=90?'var(--green)':'var(--yellow)'};margin-left:6px">${attrPct}% attributed</span>
+        </td>
+        <td class="num num-high" style="font-weight:700">${grandHigh}</td>
+        <td class="num num-med"  style="font-weight:700">${grandMed}</td>
+        <td class="num num-total">${grandTotal}</td>
+      </tr>
+    </thead>
     <tbody>${accounts.map(a => {
       const pct = Math.round(a.total / max * 100);
       return `<tr>
@@ -1319,17 +1330,6 @@ function accountHeatHtml(accounts, unattributed) {
       <td class="num" style="color:var(--muted)">${ua.total}</td>
     </tr>` : ''}
     </tbody>
-    <tfoot>
-      <tr style="border-top:2px solid var(--border)">
-        <td style="padding:7px 8px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
-          All CI Tickets
-          <span style="font-weight:400;color:${attrPct>=90?'var(--green)':'var(--yellow)'};margin-left:6px">${attrPct}% attributed</span>
-        </td>
-        <td class="num num-high" style="font-weight:700">${grandHigh}</td>
-        <td class="num num-med"  style="font-weight:700">${grandMed}</td>
-        <td class="num num-total">${grandTotal}</td>
-      </tr>
-    </tfoot>
   </table>`;
 }
 
