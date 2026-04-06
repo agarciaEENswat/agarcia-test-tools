@@ -159,6 +159,10 @@ def api_data():
             acct_data[acct_name]['total'] += 1
             if prio in ('Highest', 'High'): acct_data[acct_name]['high'] += 1
             else: acct_data[acct_name]['medium'] += 1
+        else:
+            acct_data['__unattributed__']['total'] += 1
+            if prio in ('Highest', 'High'): acct_data['__unattributed__']['high'] += 1
+            else: acct_data['__unattributed__']['medium'] += 1
 
     # Age distribution buckets
     AGE_BUCKETS = [
@@ -233,8 +237,9 @@ def api_data():
         'never_sprint':  never_sprint[:20],
         'assignee_load': sorted([{'name': k, **v} for k, v in assignee_load.items()],
                                   key=lambda x: -x['ci']),
-        'account_heat':  sorted([{'account': k, **v} for k, v in acct_data.items()],
+        'account_heat':  sorted([{'account': k, **v} for k, v in acct_data.items() if k != '__unattributed__'],
                                   key=lambda x: -x['total'])[:15],
+        'account_unattributed': dict(acct_data.get('__unattributed__', {'total': 0, 'high': 0, 'medium': 0})),
         'refreshed_at':  now.isoformat(),
     })
 
@@ -1269,9 +1274,17 @@ function outOfSpecHtml(tickets) {
   </table>`;
 }
 
-function accountHeatHtml(accounts) {
+function accountHeatHtml(accounts, unattributed) {
   if (!accounts || !accounts.length) return `<div class="empty">No account data — most CI tickets may lack account info.</div>`;
-  const max = Math.max(...accounts.map(a => a.total), 1);
+  const ua        = unattributed || {total: 0, high: 0, medium: 0};
+  const max       = Math.max(...accounts.map(a => a.total), 1);
+  const attrTotal = accounts.reduce((s, a) => s + a.total, 0);
+  const attrHigh  = accounts.reduce((s, a) => s + (a.high || 0), 0);
+  const attrMed   = accounts.reduce((s, a) => s + (a.medium || 0), 0);
+  const grandTotal = attrTotal + (ua.total || 0);
+  const grandHigh  = attrHigh  + (ua.high  || 0);
+  const grandMed   = attrMed   + (ua.medium || 0);
+  const attrPct    = grandTotal ? Math.round(attrTotal / grandTotal * 100) : 100;
   return `<table class="team-table">
     <thead><tr>
       <th>Account</th>
@@ -1293,7 +1306,30 @@ function accountHeatHtml(accounts) {
         <td class="num num-total">${a.total}</td>
       </tr>`;
     }).join('')}
+    ${ua.total ? `
+    <tr style="opacity:.55">
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="team-name" style="min-width:100px;max-width:180px;font-style:italic;color:var(--muted)">No Account</span>
+          <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${Math.round(ua.total/max*100)}%;background:var(--border)"></div></div>
+        </div>
+      </td>
+      <td class="num" style="color:var(--muted)">${ua.high || 0}</td>
+      <td class="num" style="color:var(--muted)">${ua.medium || 0}</td>
+      <td class="num" style="color:var(--muted)">${ua.total}</td>
+    </tr>` : ''}
     </tbody>
+    <tfoot>
+      <tr style="border-top:2px solid var(--border)">
+        <td style="padding:7px 8px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+          All CI Tickets
+          <span style="font-weight:400;color:${attrPct>=90?'var(--green)':'var(--yellow)'};margin-left:6px">${attrPct}% attributed</span>
+        </td>
+        <td class="num num-high" style="font-weight:700">${grandHigh}</td>
+        <td class="num num-med"  style="font-weight:700">${grandMed}</td>
+        <td class="num num-total">${grandTotal}</td>
+      </tr>
+    </tfoot>
   </table>`;
 }
 
@@ -1411,7 +1447,7 @@ function renderReporting(ci, vmssup, rep) {
     <div class="two-col">
       <div class="card" id="card-account-heat">
         <div class="card-header">Account Heat Map — Top Accounts by Open CI Tickets</div>
-        <div class="card-body">${accountHeatHtml(ci.account_heat)}</div>
+        <div class="card-body">${accountHeatHtml(ci.account_heat, ci.account_unattributed)}</div>
       </div>
       <div class="card" id="card-engineer-load">
         <div class="card-header">Engineer Load — CI + VMSSUP Combined</div>
