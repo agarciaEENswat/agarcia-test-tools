@@ -130,13 +130,64 @@ def last_team_comment(comments):
 
 
 def last_any_comment(comments):
-    """Return (datetime, author_name) of the most recent comment from anyone, or (None, None)."""
+    """Return (datetime, author_name, body_text) of the most recent comment from anyone, or (None, None, None)."""
     if not comments:
-        return None, None
+        return None, None, None
     c = max(comments, key=lambda x: x["created"])
     author = c.get("author", {}).get("displayName", "Unknown")
     dt = datetime.fromisoformat(c["created"].replace("Z", "+00:00"))
-    return dt, author
+    body = _extract_comment_text(c.get("body", ""))
+    return dt, author, body
+
+
+def _extract_comment_text(content):
+    """Extract plain text from ADF or string comment body."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        if content.get("type") == "text":
+            return content.get("text", "")
+        if content.get("type") == "hardBreak":
+            return "\n"
+        if "content" in content:
+            return _extract_comment_text(content["content"])
+    if isinstance(content, list):
+        return "".join(_extract_comment_text(i) for i in content)
+    return ""
+
+
+HANDOFF_KEYWORDS = [
+    "please verify", "please validate", "please test", "please confirm", "please check",
+    "can you verify", "can you validate", "can you confirm", "can you test", "can you check",
+    "ready for verification", "ready for validation", "ready to test", "ready for testing",
+    "fix has been", "fix is in", "fix deployed", "fix released",
+    "has been deployed", "has been released", "has been fixed",
+    "should be fixed", "should be resolved", "should now work",
+    "deployed to", "released to", "pushed to",
+    "let me know if", "let us know if",
+    "waiting for support", "waiting on support",
+]
+
+
+def detect_waiting_on_support(comments):
+    """
+    Return (True, author, snippet) if any of the last 5 comments looks like
+    a handoff to support, and no team member has commented since.
+    """
+    if not comments:
+        return False, None, None
+    recent = sorted(comments, key=lambda x: x["created"], reverse=True)[:5]
+    for c in recent:
+        author = c.get("author", {}).get("displayName", "")
+        # Stop scanning if a team member commented after this point
+        if author in TEAM:
+            return False, None, None
+        body = _extract_comment_text(c.get("body", "")).lower()
+        for kw in HANDOFF_KEYWORDS:
+            if kw in body:
+                snippet = _extract_comment_text(c.get("body", "")).strip()[:120]
+                return True, author, snippet
+    return False, None, None
 
 
 def get_sprint(fields):
@@ -209,6 +260,7 @@ def run_check(jql, auth_header, days_threshold, label):
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_threshold)
     stale = []
+    waiting = []
     fresh = []
 
     for issue in issues:
@@ -219,10 +271,11 @@ def run_check(jql, auth_header, days_threshold, label):
         inline = issue["fields"].get("comment", {}).get("comments", [])
         comments = inline if inline else get_comments_for_issue(key, auth_header)
 
-        last_dt, last_by  = last_team_comment(comments)
-        any_dt,  any_by   = last_any_comment(comments)
+        last_dt, last_by      = last_team_comment(comments)
+        any_dt,  any_by, _    = last_any_comment(comments)
         sprint_name, sprint_days_left, sprint_display = get_sprint(issue["fields"])
         score = urgency_score(last_dt, sprint_days_left)
+        is_handoff, handoff_by, handoff_snippet = detect_waiting_on_support(comments)
 
         ticket = {
             "key": key, "summary": summary, "assignee": assignee,
@@ -230,16 +283,35 @@ def run_check(jql, auth_header, days_threshold, label):
             "any_dt": any_dt, "any_by": any_by,
             "sprint_name": sprint_name, "sprint_days_left": sprint_days_left,
             "sprint_display": sprint_display, "score": score,
+            "handoff_by": handoff_by, "handoff_snippet": handoff_snippet,
         }
 
-        if last_dt is None or last_dt < cutoff:
+        if is_handoff:
+            waiting.append(ticket)
+        elif last_dt is None or last_dt < cutoff:
             stale.append(ticket)
         else:
             fresh.append(ticket)
 
-    if not stale:
+    if not stale and not waiting:
         print(f"\n  {green('All tickets have recent team responses.')} ({len(fresh)} total)\n")
         return
+
+    # ── Waiting on support to verify ─────────────────────────────────────────
+    if waiting:
+        waiting.sort(key=lambda t: t["score"], reverse=True)
+        print(f"\n  {yellow(f'WAITING ON SUPPORT TO VERIFY — {len(waiting)} ticket(s)')}\n")
+        for t in waiting:
+            trunc = t["summary"][:60] + ("…" if len(t["summary"]) > 60 else "")
+            sprint_str = f"{t['sprint_name']}  |  {t['sprint_display']}" if t["sprint_name"] else dim("no sprint")
+            snippet_str = f"\n       {dim(repr(t['handoff_snippet'][:100]))}" if t["handoff_snippet"] else ""
+            print(f"  {bold(t['key'])}  {trunc}")
+            last_team_str = ('last team: ' + format_age(t['last_dt'])) if t['last_dt'] else 'no team comment'
+            print(f"       {dim('Assignee:')} {t['assignee']}  |  {yellow('handoff by ' + t['handoff_by'])}  |  {dim(last_team_str)}")
+            print(f"       {dim('Sprint:')} {sprint_str}{snippet_str}")
+            print(f"       {dim('https://eagleeyenetworks.atlassian.net/browse/' + t['key'])}")
+            print()
+        print()
 
     # Group stale tickets by last team member who commented
     groups = defaultdict(list)
