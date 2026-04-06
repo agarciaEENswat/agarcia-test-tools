@@ -366,6 +366,13 @@ Present results grouped by team member. Include urgency score, assignee, last te
 
 ### Total Open Customer Impact Tickets: N
 
+### Needs Team Response
+**High** (>1 day without team reply — N tickets)
+[grouped by last team member, urgency score, sprint info]
+
+**Medium** (>2 days without team reply — N tickets)
+[grouped by last team member, urgency score, sprint info]
+
 ### Out of Spec Work Items (N)
 [table: Ticket | Project | Priority | Status | Assignee | Age | Summary]
 
@@ -378,16 +385,9 @@ Present results grouped by team member. Include urgency score, assignee, last te
 
 ### Open Tickets by Engineering Team
 [table: Team | Total (±delta) | High | Medium | Low]
-
-### Needs Team Response
-**High** (>1 day without team reply — N tickets)
-[grouped by last team member, urgency score, sprint info]
-
-**Medium** (>2 days without team reply — N tickets)
-[grouped by last team member, urgency score, sprint info]
 ```
 
-Run all sections in parallel where possible (sections 1-5 are independent API calls; sections 6 and 7 run after section 4 completes).
+Run all sections in parallel where possible (sections 1, 2, 3, 5, 6 are independent API calls that can run concurrently; sections 7 and 8 run after section 4 completes).
 
 ## Save Today's Snapshot
 
@@ -432,9 +432,10 @@ The document should contain **all sections in full detail** — every ticket lis
 2. Section 1: All new tickets (full table)
 3. Section 2 & 3: All high/medium open tickets (full tables with NO MOVEMENT / STALLED flags)
 4. Section 4: Customer impact age chart + full ticket list
-5. Section 5: Full out-of-spec table
-6. Section 7: Full sprint carry-over breakdown — all three categories (punted, carried over, never in sprint) with complete ticket details
-7. Section 6: Full jira-stalker output per team member
+5. Section 6: Full jira-stalker output — Needs Team Response (High + Medium)
+6. Section 5: Full out-of-spec table
+7. Section 7: Full sprint carry-over breakdown — all three categories (punted, carried over, never in sprint) with complete ticket details
+8. Section 8: Open tickets by engineering team
 
 ## Final Step — Upload Document and Send Briefing to Zulip
 

@@ -271,8 +271,9 @@ HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Customer Impact Health</title>
+<title>EEN Ops Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -591,6 +592,116 @@ header h1 { font-size: 16px; font-weight: 600; }
   border-bottom: 1px solid var(--border);
 }
 
+/* MD Viewer */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: var(--blue);
+  background: rgba(88,166,255,.05);
+  color: var(--text);
+}
+.drop-zone-icon { font-size: 32px; }
+.drop-zone-hint { font-size: 12px; color: var(--muted); }
+.md-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+  border-bottom: none;
+}
+.md-filename { font-size: 13px; font-weight: 500; color: var(--text); }
+.md-clear-btn {
+  padding: 4px 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.md-clear-btn:hover { border-color: var(--red); color: var(--red); }
+.md-body {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  padding: 28px 36px;
+  line-height: 1.7;
+  font-size: 14px;
+  overflow-x: auto;
+}
+.md-body h1 { font-size: 22px; font-weight: 700; color: var(--text); margin: 0 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.md-body h2 { font-size: 17px; font-weight: 600; color: var(--text); margin: 24px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.md-body h3 { font-size: 14px; font-weight: 600; color: var(--blue); margin: 18px 0 8px; }
+.md-body h4 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .05em; }
+.md-body p  { color: var(--text); margin: 0 0 10px; }
+.md-body ul, .md-body ol { color: var(--text); padding-left: 22px; margin: 0 0 10px; }
+.md-body li { margin-bottom: 4px; }
+.md-body a  { color: var(--blue); text-decoration: none; }
+.md-body a:hover { text-decoration: underline; }
+.md-body strong { color: var(--text); font-weight: 600; }
+.md-body em { color: var(--muted); }
+.md-body code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--orange);
+}
+.md-body pre {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 12px;
+}
+.md-body pre code { background: none; border: none; padding: 0; color: var(--text); font-size: 12px; }
+.md-body blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0 0 12px;
+  padding: 4px 16px;
+  color: var(--muted);
+}
+.md-body table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 0 0 12px; }
+.md-body table th { text-align: left; padding: 7px 10px; background: var(--surface2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border); }
+.md-body table td { padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--text); }
+.md-body table tr:last-child td { border-bottom: none; }
+.md-body hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+/* Briefing banner */
+.briefing-banner {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  background: rgba(88,166,255,.07);
+  border: 1px solid rgba(88,166,255,.25);
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 13px;
+}
+.briefing-banner-title { color: var(--blue); font-weight: 600; margin-right: 16px; }
+.briefing-sep { color: var(--border); margin: 0 14px; }
+.briefing-item { color: var(--text); }
+
 /* Tabs */
 .tab-bar {
   display: flex;
@@ -713,9 +824,13 @@ header h1 { font-size: 16px; font-weight: 600; }
 <nav class="tab-bar">
   <button class="tab active" data-tab="ci" onclick="switchTab('ci')">Customer Impact</button>
   <button class="tab" data-tab="vmssup" onclick="switchTab('vmssup')">VMSSUP Board</button>
+  <button class="tab" data-tab="md" onclick="switchTab('md')">Morning Briefing</button>
 </nav>
 
 <div id="panel-ci">
+  <div id="briefing-banner-wrap" style="padding:12px 24px 0;display:none">
+    <div id="briefing-banner" class="briefing-banner"></div>
+  </div>
   <div class="wrapper" id="app">
     <div class="loading"><div class="spinner"></div> Loading JIRA data…</div>
   </div>
@@ -723,6 +838,26 @@ header h1 { font-size: 16px; font-weight: 600; }
 <div id="panel-vmssup" style="display:none">
   <div class="wrapper" id="vmssup-app">
     <div class="loading"><div class="spinner"></div> Loading VMSSUP board…</div>
+  </div>
+</div>
+<div id="panel-md" style="display:none">
+  <div class="wrapper" id="md-app">
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('md-file-input').click()"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')"
+         ondrop="handleDrop(event)">
+      <div class="drop-zone-icon">📄</div>
+      <div>Drop a <strong>.md</strong> file here, or click to browse</div>
+      <div class="drop-zone-hint">Morning briefing reports are saved to ~/Documents/Morning Briefing/</div>
+    </div>
+    <input type="file" id="md-file-input" accept=".md,text/markdown,text/plain" style="display:none" onchange="handleFileInput(event)">
+    <div id="md-content" style="display:none">
+      <div class="md-toolbar">
+        <span class="md-filename" id="md-filename"></span>
+        <button class="md-clear-btn" onclick="clearMd()">✕ Clear</button>
+      </div>
+      <div class="md-body" id="md-body"></div>
+    </div>
   </div>
 </div>
 
@@ -754,8 +889,93 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.getElementById('panel-ci').style.display     = tab === 'ci'     ? '' : 'none';
   document.getElementById('panel-vmssup').style.display = tab === 'vmssup' ? '' : 'none';
-  const d = tab === 'ci' ? ciData : vmssupData;
-  if (d) document.getElementById('refresh-time').textContent = 'Refreshed ' + formatRefreshTime(d.refreshed_at);
+  document.getElementById('panel-md').style.display     = tab === 'md'     ? '' : 'none';
+  if (tab === 'md') {
+    document.getElementById('refresh-time').textContent = mdFilename ? mdFilename : 'No file loaded';
+  } else {
+    const d = tab === 'ci' ? ciData : vmssupData;
+    if (d) document.getElementById('refresh-time').textContent = 'Refreshed ' + formatRefreshTime(d.refreshed_at);
+  }
+}
+
+let mdFilename   = '';
+let briefingData = null;
+
+function parseBriefingData(text) {
+  const d = {};
+  const dateM = text.match(/## Morning Briefing[^\n]*?(\d{4}-\d{2}-\d{2})/);
+  if (dateM) d.date = dateM[1];
+  const totalM = text.match(/Total Open Customer Impact Tickets:\s*(\d+)(?:\s*([▲▼]\d+))?/);
+  if (totalM) { d.ciTotal = parseInt(totalM[1]); d.ciDelta = totalM[2] || null; }
+  const oosM = text.match(/Out of Spec Work Items\s*\((\d+)\)/);
+  if (oosM) d.outOfSpec = parseInt(oosM[1]);
+  const nrHighM = text.match(/\*\*High\*\*[^\n]*?(\d+)\s*ticket/);
+  if (nrHighM) d.needsHigh = parseInt(nrHighM[1]);
+  const nrMedM = text.match(/\*\*Medium\*\*[^\n]*?(\d+)\s*ticket/);
+  if (nrMedM) d.needsMed = parseInt(nrMedM[1]);
+  return Object.keys(d).length > 1 ? d : null;
+}
+
+function showBriefingBanner(data) {
+  if (!data) return;
+  const parts = [];
+  if (data.ciTotal !== undefined) {
+    const dColor = data.ciDelta ? (data.ciDelta.startsWith('▲') ? 'var(--orange)' : 'var(--green)') : '';
+    const dHtml  = data.ciDelta ? ` <strong style="color:${dColor}">${data.ciDelta}</strong>` : '';
+    parts.push(`<span class="briefing-item">CI total this morning: <strong>${data.ciTotal}</strong>${dHtml}</span>`);
+  }
+  if (data.needsHigh !== undefined || data.needsMed !== undefined) {
+    const h = data.needsHigh || 0, m = data.needsMed || 0;
+    parts.push(`<span class="briefing-item">Needs response: <strong style="color:var(--orange)">${h} High</strong> · <strong style="color:var(--blue)">${m} Med</strong></span>`);
+  }
+  if (data.outOfSpec !== undefined) {
+    parts.push(`<span class="briefing-item">Out of spec: <strong style="color:var(--red)">${data.outOfSpec}</strong></span>`);
+  }
+  const dateStr = data.date ? ` — ${data.date}` : '';
+  document.getElementById('briefing-banner').innerHTML =
+    `<span class="briefing-banner-title">📋 Morning Briefing${dateStr}</span>` +
+    parts.map(p => `<span class="briefing-sep">|</span>${p}`).join('');
+  document.getElementById('briefing-banner-wrap').style.display = '';
+}
+
+function loadMdContent(text, filename) {
+  mdFilename = filename;
+  document.getElementById('md-filename').textContent = filename;
+  document.getElementById('md-body').innerHTML = marked.parse(text);
+  document.getElementById('drop-zone').style.display  = 'none';
+  document.getElementById('md-content').style.display = '';
+  if (currentTab === 'md') document.getElementById('refresh-time').textContent = filename;
+  briefingData = parseBriefingData(text);
+  showBriefingBanner(briefingData);
+}
+
+function clearMd() {
+  mdFilename = '';
+  briefingData = null;
+  document.getElementById('drop-zone').style.display  = '';
+  document.getElementById('md-content').style.display = 'none';
+  document.getElementById('md-body').innerHTML = '';
+  document.getElementById('md-file-input').value = '';
+  document.getElementById('briefing-banner-wrap').style.display = 'none';
+  if (currentTab === 'md') document.getElementById('refresh-time').textContent = 'No file loaded';
+}
+
+function handleFileInput(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => loadMdContent(e.target.result, file.name);
+  reader.readAsText(file);
+}
+
+function handleDrop(evt) {
+  evt.preventDefault();
+  document.getElementById('drop-zone').classList.remove('drag-over');
+  const file = evt.dataTransfer.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => loadMdContent(e.target.result, file.name);
+  reader.readAsText(file);
 }
 
 function jiraLink(extraJql) {
