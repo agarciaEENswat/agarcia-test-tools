@@ -31,8 +31,7 @@ CI_BASE = (
     'OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) '
     'AND issuetype not in (Improvement, story) '
     'AND statusCategory not in (Done) '
-    'AND priority not in (Low, Lowest) '
-    'AND (duedate is EMPTY OR duedate <= now())'
+    'AND priority not in (Low, Lowest)'
 )
 
 VMSSUP_JQL = (
@@ -57,8 +56,33 @@ CI_HIST_BASE = (
     'AND priority not in (Low, Lowest)'
 )
 
+THEMES = [
+    ("PTZ",                   ["ptz"]),
+    ("Audio",                 ["audio"]),
+    ("Cluster / Archiver",    ["cluster", "archiver"]),
+    ("Playback / History",    ["playback", "history browser", "hb ", "hb-", "timeline", "footage"]),
+    ("Camera Offline",        ["offline", "falling offline"]),
+    ("Streaming",             ["stream", "live view", "live feed"]),
+    ("Detection / CV",        ["detection", "person and vehicle", "vehicle detection", "analytics"]),
+    ("Download / Retention",  ["download", "retention", "purge"]),
+    ("Notifications",         ["notification", "alert", "email"]),
+    ("Bridge / Cabinet",      ["bridge", "cabinet", "br820", "br3"]),
+    ("Access / Permissions",  ["access", "permission", "layout", "grant"]),
+    ("Mobile",                ["mobile"]),
+    ("Vulnerabilities",       ["vulnerabilit", "security"]),
+    ("Enhanced UI",           ["enhanced", "classic", "webappv1"]),
+]
+
+def classify_theme(summary):
+    s = summary.lower()
+    for label, keywords in THEMES:
+        if any(kw in s for kw in keywords):
+            return label
+    return "Other"
+
 FIELDS_FULL  = ['summary','status','priority','assignee','duedate','labels',
-                'customfield_10500','created','project','sprint','customfield_11063','description']
+                'customfield_10500','created','project','sprint','customfield_11063','description',
+                'customfield_10007']
 
 def _extract_adf_text(content):
     if isinstance(content, str): return content
@@ -97,6 +121,8 @@ def fmt_issue(i, now):
     f = i['fields']
     created = datetime.fromisoformat(f['created'].replace('Z', '+00:00'))
     age = (now - created).days
+    sprints = f.get('customfield_10007') or f.get('sprint') or []
+    if not isinstance(sprints, list): sprints = [sprints] if sprints else []
     return {
         'key':      i['key'],
         'summary':  f.get('summary', ''),
@@ -108,6 +134,7 @@ def fmt_issue(i, now):
         'age_days':      age,
         'created_date':  created.strftime('%Y-%m-%d'),
         'url':           f'{BASE}/browse/{i["key"]}',
+        'sprint_count':  len(sprints),
     }
 
 
@@ -121,8 +148,9 @@ def api_data():
     # Aggregations
     prio_counts  = defaultdict(int)
     team_data    = defaultdict(lambda: {'total': 0, 'highest': 0, 'high': 0, 'medium': 0})
-    assignee_load = defaultdict(lambda: {'ci': 0, 'ci_highest': 0, 'ci_high': 0})
-    acct_data     = defaultdict(lambda: {'total': 0, 'high': 0, 'medium': 0})
+    assignee_load    = defaultdict(lambda: {'ci': 0, 'ci_highest': 0, 'ci_high': 0})
+    assignee_tickets = defaultdict(list)
+    acct_data        = defaultdict(lambda: {'total': 0, 'high': 0, 'medium': 0})
 
     for issue in all_issues:
         f    = issue['fields']
@@ -142,6 +170,7 @@ def api_data():
         assignee_load[assignee]['ci'] += 1
         if prio == 'Highest':   assignee_load[assignee]['ci_highest'] += 1
         elif prio == 'High':    assignee_load[assignee]['ci_high'] += 1
+        assignee_tickets[assignee].append(fmt_issue(issue, now))
 
         # Account heat map
         acct_raw = f.get('customfield_11063')
@@ -207,7 +236,7 @@ def api_data():
             due_soon.append(fmted)
         if 'repeatedly-punted' in (f.get('labels') or []):
             punted.append(fmted)
-        sprint_val = f.get('sprint')
+        sprint_val = f.get('customfield_10007')
         if not sprint_val:
             never_sprint.append(fmted)
 
@@ -222,10 +251,13 @@ def api_data():
     # Build per-team ticket lists for inline panel
     teams_tickets   = defaultdict(list)
     account_tickets = defaultdict(list)
+    theme_tickets   = defaultdict(list)
     for issue in all_issues:
         f    = issue['fields']
         team = (f.get('customfield_10500') or {}).get('name', 'Unassigned')
-        teams_tickets[team].append(fmt_issue(issue, now))
+        fmted = fmt_issue(issue, now)
+        teams_tickets[team].append(fmted)
+        theme_tickets[classify_theme(f.get('summary', ''))].append(fmted)
 
         acct_raw = f.get('customfield_11063')
         if isinstance(acct_raw, dict):
@@ -237,7 +269,7 @@ def api_data():
             m = re.search(r'(?:Master\s+)?Account:\s*\d+\s*[-–]\s*(.+)', desc_text, re.IGNORECASE)
             if m:
                 acct_key = m.group(1).strip().split('\n')[0].strip()
-        account_tickets[acct_key or '__none__'].append(fmt_issue(issue, now))
+        account_tickets[acct_key or '__none__'].append(fmted)
 
     return jsonify({
         'total':         len(all_issues),
@@ -245,13 +277,16 @@ def api_data():
         'teams':         [{'name': k, **v} for k, v in teams_sorted],
         'teams_tickets':   {k: sorted(v, key=lambda x: -x['age_days']) for k, v in teams_tickets.items()},
         'account_tickets': {k: sorted(v, key=lambda x: -x['age_days']) for k, v in account_tickets.items()},
+        'themes':          sorted([{'label': k, 'count': len(v)} for k, v in theme_tickets.items()], key=lambda x: -x['count']),
+        'theme_tickets':   {k: sorted(v, key=lambda x: -x['age_days']) for k, v in theme_tickets.items()},
         'age_dist':      [{'label': lbl, **age_dist[lbl]} for lbl, _, _ in AGE_BUCKETS],
         'out_of_spec':   out_of_spec,
         'due_soon':      sorted(due_soon, key=lambda x: x['duedate']),
         'punted':        punted,
-        'never_sprint':  never_sprint[:20],
+        'never_sprint':  never_sprint,
         'assignee_load': sorted([{'name': k, **v} for k, v in assignee_load.items()],
                                   key=lambda x: -x['ci']),
+        'assignee_tickets': {k: v for k, v in assignee_tickets.items()},
         'account_heat':  sorted([{'account': k, **v} for k, v in acct_data.items() if k != '__unattributed__'],
                                   key=lambda x: -x['total'])[:15],
         'account_attributed': {
@@ -330,6 +365,41 @@ def api_vmssup():
         'stalled':      stalled,
         'refreshed_at': now.isoformat(),
     })
+
+
+@app.route('/api/pipeline')
+def api_pipeline():
+    now = datetime.now(timezone.utc)
+    issues = jira_search(
+        '((project = VMSSUP AND NOT (description ~ "task id" AND reporter in (604fb2f681b82500682d022a))) '
+        'OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) '
+        'AND status in ("Engineering Work", "Support Review", "Validation") '
+        'AND statusCategory != Done '
+        'AND issuetype not in (Improvement, story) '
+        'AND priority not in (Low, Lowest) '
+        'ORDER BY updated ASC',
+        ['summary', 'status', 'priority', 'assignee', 'updated', 'created', 'project'],
+        max_results=100
+    )
+    tickets = []
+    for i in issues:
+        f = i['fields']
+        created = datetime.fromisoformat(f['created'].replace('Z', '+00:00'))
+        updated = datetime.fromisoformat(f['updated'].replace('Z', '+00:00'))
+        tickets.append({
+            'key':        i['key'],
+            'summary':    f.get('summary', ''),
+            'status':     f['status']['name'],
+            'priority':   (f.get('priority') or {}).get('name', '?'),
+            'assignee':   (f.get('assignee') or {}).get('displayName', 'Unassigned'),
+            'age_days':   (now - created).days,
+            'stale_days': (now - updated).days,
+            'project':    f['project']['key'],
+        })
+    by_status = {}
+    for t in tickets:
+        by_status.setdefault(t['status'], []).append(t)
+    return jsonify({'by_status': by_status, 'total': len(tickets), 'refreshed_at': now.isoformat()})
 
 
 @app.route('/api/reporting')
@@ -537,6 +607,23 @@ header h1 { font-size: 16px; font-weight: 600; }
 .legend-row .dot-label { display: flex; align-items: center; gap: 8px; }
 .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .legend-count { font-weight: 600; color: var(--text); }
+
+/* Theme overview */
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+}
+.theme-row:last-child { border-bottom: none; }
+.theme-row:hover { background: var(--surface2); margin: 0 -14px; padding: 6px 14px; }
+.theme-label { width: 160px; flex-shrink: 0; color: var(--text); }
+.theme-bar-wrap { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.theme-bar { height: 100%; background: var(--blue); border-radius: 4px; transition: width .3s; }
+.theme-count { width: 28px; text-align: right; font-weight: 600; color: var(--text); flex-shrink: 0; }
 
 /* Team table */
 .team-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1015,7 +1102,7 @@ header h1 { font-size: 16px; font-weight: 600; }
 
 <script>
 const JIRA_NAV = 'https://eagleeyenetworks.atlassian.net/issues/?jql=';
-const CI_BASE  = '((project = EENS AND reporter not in (604fb2f681b82500682d022a)) OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) AND issuetype not in (Improvement, story) AND statusCategory not in (Done) AND priority not in (Low, Lowest) AND (duedate is EMPTY OR duedate <= now())';
+const CI_BASE  = '((project = EENS AND reporter not in (604fb2f681b82500682d022a)) OR (project in (EEPD, Infrastructure) AND labels in (customer-impact))) AND issuetype not in (Improvement, story) AND statusCategory not in (Done) AND priority not in (Low, Lowest)';
 
 let prioChart      = null;
 let teamChart      = null;
@@ -1197,6 +1284,39 @@ function openTeamModal(teamName) {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
+function themeOverviewHtml(themes) {
+  if (!themes || !themes.length) return `<div class="empty">No data.</div>`;
+  const max = Math.max(...themes.map(t => t.count), 1);
+  return themes.map(t => {
+    const pct = Math.round(t.count / max * 100);
+    return `
+    <div class="theme-row" onclick="openThemeModal('${t.label.replace(/'/g,"\\'")}')">
+      <span class="theme-label">${t.label}</span>
+      <div class="theme-bar-wrap">
+        <div class="theme-bar" style="width:${pct}%"></div>
+      </div>
+      <span class="theme-count">${t.count}</span>
+    </div>`;
+  }).join('');
+}
+
+function openThemeModal(label) {
+  const tickets = (ciData.theme_tickets || {})[label] || [];
+  document.getElementById('modal-title').textContent = `${label} — ${tickets.length} ticket${tickets.length !== 1 ? 's' : ''}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-col-hdr"><span>Key</span><span>Priority</span><span>Summary</span><span>Assignee</span><span>Age</span></div>
+    ${tickets.map(t => `
+      <div class="modal-ticket">
+        <a class="ticket-key" href="${t.url}" target="_blank">${t.key}</a>
+        ${prioBadge(t.priority)}
+        <span class="ticket-summary" title="${t.summary}">${t.summary}</span>
+        <span style="color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.assignee}</span>
+        <span style="color:var(--muted);font-size:11px">${t.age_days}d</span>
+      </div>`).join('')}
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
 function openAccountModal(rawName) {
   const tickets     = accountTickets[rawName] || [];
   const displayName = rawName === '__none__' ? 'No Account' : rawName.replace(/^\d{6,8}(?:\s*[-–]\s*|\s+)/, '');
@@ -1222,17 +1342,18 @@ function closeModal(evt) {
 
 function formatRefreshTime(iso) {
   const d = new Date(iso);
+  const date  = d.toLocaleDateString([], {month: 'short', day: 'numeric', year: 'numeric'});
   const local = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', timeZoneName: 'short'});
   const utcH  = String(d.getUTCHours()).padStart(2,'0');
   const utcM  = String(d.getUTCMinutes()).padStart(2,'0');
-  return `${local} (${utcH}:${utcM} UTC)`;
+  return `${date} · ${local} (${utcH}:${utcM} UTC)`;
 }
 
 function prioBadge(p) {
   return `<span class="prio-badge prio-${p}">${p}</span>`;
 }
 
-function ticketRows(tickets, {showDue=false, showCreated=false}={}) {
+function ticketRows(tickets, {showDue=false, showCreated=false, showSprintCount=false}={}) {
   if (!tickets.length) return `<div class="empty">None.</div>`;
   return `<div class="ticket-list">${tickets.map(t => `
     <div class="ticket-item">
@@ -1240,6 +1361,7 @@ function ticketRows(tickets, {showDue=false, showCreated=false}={}) {
       ${prioBadge(t.priority)}
       <span class="ticket-summary" title="${t.summary}">${t.summary}</span>
       <span class="ticket-meta">${
+        showSprintCount && t.sprint_count ? `(${t.sprint_count} sprint${t.sprint_count !== 1 ? 's' : ''})` :
         showDue && t.duedate ? 'due ' + t.duedate :
         showCreated ? t.created_date :
         t.assignee !== 'Unassigned' ? t.assignee.split(' ')[0] : '—'
@@ -1372,6 +1494,25 @@ function accountHeatHtml(accounts, unattributed, attributed) {
   </table>`;
 }
 
+function openEngineerModal(name) {
+  const tickets = (ciData.assignee_tickets || {})[name] || [];
+  document.getElementById('modal-title').textContent = `${name} — ${tickets.length} CI ticket${tickets.length !== 1 ? 's' : ''}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-col-hdr"><span>Key</span><span>Priority</span><span>Summary</span><span>Status</span><span>Age</span></div>
+    ${tickets.sort((a,b) => {
+      const po = {'Highest':0,'High':1,'Medium':2,'Low':3};
+      return (po[a.priority]??9) - (po[b.priority]??9);
+    }).map(t => `
+      <div class="modal-ticket" onclick="window.open('https://eagleeyenetworks.atlassian.net/browse/${t.key}','_blank')" style="cursor:pointer">
+        <span style="color:var(--blue);font-weight:500">${t.key}</span>
+        <span style="color:${t.priority==='Highest'?'var(--red)':t.priority==='High'?'var(--orange)':t.priority==='Medium'?'var(--yellow)':'var(--text)'}">${t.priority}</span>
+        <span>${t.summary}</span>
+        <span style="color:var(--muted);font-size:12px">${t.status}</span>
+        <span style="color:var(--muted)">${t.age_days}d</span>
+      </div>`).join('')}`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
 function engineerLoadHtml(loadList, maxLoad) {
   if (!loadList.length) return `<div class="empty">No data.</div>`;
   return `<table class="team-table">
@@ -1386,7 +1527,7 @@ function engineerLoadHtml(loadList, maxLoad) {
       return `<tr>
         <td>
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="team-name" style="min-width:80px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name.split(' ').slice(0,2).join(' ')}</span>
+            <span class="team-name" style="min-width:80px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--blue)" onclick="openEngineerModal('${e.name.replace(/'/g,"\\'")}')">${e.name.split(' ').slice(0,2).join(' ')}</span>
             <div class="bar-bg" style="flex:1;min-width:40px"><div class="bar-fill" style="width:${pct}%;background:var(--purple)"></div></div>
           </div>
         </td>
@@ -1429,6 +1570,46 @@ function pipelineHealthHtml(stageStats, cols) {
   </table>`;
 }
 
+function pipelineStatusHtml(byStatus) {
+  const STATUS_ORDER = ['Engineering Work', 'Support Review', 'Validation'];
+  const STATUS_COLOR = {'Engineering Work': 'var(--blue)', 'Support Review': 'var(--orange)', 'Validation': 'var(--green)'};
+  const PRIO_COLOR   = {'Highest': 'var(--red)', 'High': 'var(--orange)', 'Medium': 'var(--yellow)'};
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+  html += '<thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase">'
+        + '<th style="text-align:left;padding:4px 6px">Ticket</th>'
+        + '<th style="text-align:left;padding:4px 6px">Status</th>'
+        + '<th style="text-align:left;padding:4px 6px">Priority</th>'
+        + '<th style="text-align:left;padding:4px 6px">Assignee</th>'
+        + '<th style="text-align:right;padding:4px 6px">Age</th>'
+        + '<th style="text-align:right;padding:4px 6px">No Update</th>'
+        + '<th style="text-align:left;padding:4px 6px">Summary</th>'
+        + '</tr></thead><tbody>';
+  const statuses = STATUS_ORDER.filter(s => byStatus[s] && byStatus[s].length);
+  for (const status of statuses) {
+    const tickets = byStatus[status];
+    for (const t of tickets) {
+      const staleFlag = (status === 'Engineering Work' && t.stale_days >= 7) ||
+                        (status === 'Support Review'   && t.stale_days >= 3) ||
+                        (status === 'Validation'       && t.stale_days >= 5);
+      const rowBg = staleFlag ? 'background:rgba(248,81,73,0.05)' : '';
+      const staleStr = staleFlag ? ` <span style="color:var(--red);font-size:11px">⚠</span>` : '';
+      const jiraUrl = `https://eagleeyenetworks.atlassian.net/browse/${t.key}`;
+      html += `<tr style="border-top:1px solid var(--border);${rowBg}">
+        <td style="padding:5px 6px"><a href="${jiraUrl}" target="_blank" style="color:var(--blue)">${t.key}</a></td>
+        <td style="padding:5px 6px"><span style="color:${STATUS_COLOR[status]||'var(--text)'};font-size:12px">${status}</span></td>
+        <td style="padding:5px 6px"><span style="color:${PRIO_COLOR[t.priority]||'var(--text)'};font-size:12px">${t.priority}</span></td>
+        <td style="padding:5px 6px;color:var(--muted)">${t.assignee}</td>
+        <td style="padding:5px 6px;text-align:right;color:var(--muted)">${t.age_days}d</td>
+        <td style="padding:5px 6px;text-align:right">${t.stale_days}d${staleStr}</td>
+        <td style="padding:5px 6px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.summary}</td>
+      </tr>`;
+    }
+  }
+  if (!statuses.length) html += '<tr><td colspan="7" style="padding:12px;color:var(--muted);text-align:center">No tickets in pipeline</td></tr>';
+  html += '</tbody></table>';
+  return html;
+}
+
 function renderReporting(ci, vmssup, rep) {
   if (!rep || !ci || !vmssup) return;
   const app = document.getElementById('app');
@@ -1461,6 +1642,54 @@ function renderReporting(ci, vmssup, rep) {
         stageStats[col].count++;
       }
     }
+  }
+
+  // Velocity summary card (populated here since reporting data is available)
+  const velBody = document.getElementById('velocity-body');
+  if (velBody && rep.throughput_weeks && rep.throughput_weeks.length) {
+    const wks = rep.throughput_weeks;
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>'
+      + '<th style="text-align:left;padding:4px 8px;color:var(--muted);font-weight:400">Week</th>'
+      + '<th style="text-align:right;padding:4px 8px;color:var(--muted);font-weight:400">Opened</th>'
+      + '<th style="text-align:right;padding:4px 8px;color:var(--muted);font-weight:400">Closed</th>'
+      + '<th style="text-align:right;padding:4px 8px;color:var(--muted);font-weight:400">Net</th>'
+      + '</tr></thead><tbody>';
+    for (let i = 0; i < wks.length; i++) {
+      const w = wks[i];
+      const net = w.closed - w.opened;
+      const netColor = net > 0 ? 'var(--green)' : net < 0 ? 'var(--red)' : 'var(--muted)';
+      const netStr = net > 0 ? '+' + net : String(net);
+      const isThisWeek = i === wks.length - 1;
+      const rowStyle = isThisWeek ? 'background:rgba(255,255,255,0.03);font-weight:600' : '';
+      html += `<tr style="${rowStyle}">
+        <td style="padding:5px 8px">${w.label}${isThisWeek ? ' <span style="color:var(--muted);font-size:11px;font-weight:400">(this week)</span>' : ''}</td>
+        <td style="padding:5px 8px;text-align:right;color:var(--red)">${w.opened}</td>
+        <td style="padding:5px 8px;text-align:right;color:var(--green)">${w.closed}</td>
+        <td style="padding:5px 8px;text-align:right;color:${netColor};font-weight:700">${netStr}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    // Headline: this week's net
+    const tw = wks[wks.length - 1];
+    const twNet = tw.closed - tw.opened;
+    const twColor = twNet > 0 ? 'var(--green)' : twNet < 0 ? 'var(--red)' : 'var(--muted)';
+    const twNetStr = twNet > 0 ? '+' + twNet : String(twNet);
+    velBody.innerHTML = `
+      <div style="display:flex;gap:24px;align-items:center;padding:8px 8px 12px">
+        <div style="text-align:center">
+          <div style="font-size:28px;font-weight:700;color:${twColor}">${twNetStr}</div>
+          <div style="font-size:11px;color:var(--muted)">Net this week</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:600;color:var(--green)">${tw.closed}</div>
+          <div style="font-size:11px;color:var(--muted)">Closed</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:600;color:var(--red)">${tw.opened}</div>
+          <div style="font-size:11px;color:var(--muted)">Opened</div>
+        </div>
+        <div style="flex:1">${html}</div>
+      </div>`;
   }
 
   // Throughput
@@ -1497,6 +1726,11 @@ function renderReporting(ci, vmssup, rep) {
     <div class="card" id="card-pipeline">
       <div class="card-header">VMSSUP Pipeline Health — Avg Ticket Age by Stage</div>
       <div class="card-body">${pipelineHealthHtml(stageStats, vmssup.display_cols)}</div>
+    </div>
+
+    <div class="card" id="card-pipeline-status">
+      <div class="card-header">CI Pipeline Status — Engineering / Support Review / Validation</div>
+      <div class="card-body" id="pipeline-status-body"><span style="color:var(--muted)">Loading…</span></div>
     </div>
   `;
   app.appendChild(section);
@@ -1693,6 +1927,12 @@ function render(d) {
       </div>
     </div>
 
+    <!-- Theme Overview -->
+    <div class="card" id="card-themes">
+      <div class="card-header">Theme Overview — What Are We Dealing With?</div>
+      <div class="card-body">${themeOverviewHtml(d.themes)}</div>
+    </div>
+
     <!-- Age dist + Out of spec -->
     <div class="two-col">
       <div class="card" id="card-age-dist">
@@ -1702,7 +1942,7 @@ function render(d) {
         </div>
       </div>
       <div class="card" id="card-out-of-spec">
-        <div class="card-header">Out of Spec (${d.out_of_spec.length})</div>
+        <div class="card-header">Out of Spec (${d.out_of_spec.length}) <a href="${jiraLink('(priority = Highest AND created < -7d) OR (priority = High AND created < -14d) OR created < -28d')}" target="_blank" style="font-size:11px;color:var(--blue);font-weight:400;margin-left:6px">↗ JIRA</a></div>
         <div class="card-body">
           ${outOfSpecHtml(d.out_of_spec)}
         </div>
@@ -1712,17 +1952,23 @@ function render(d) {
     <!-- Filters row -->
     <div class="three-col">
       <div class="card" id="card-due-soon">
-        <div class="card-header">Due Within 3 Days (${d.due_soon.length})</div>
+        <div class="card-header">Due Within 3 Days (${d.due_soon.length}) <a href="${jiraLink('duedate <= 3d AND duedate is not EMPTY')}" target="_blank" style="font-size:11px;color:var(--blue);font-weight:400;margin-left:6px">↗ JIRA</a></div>
         <div class="card-body">${ticketRows(d.due_soon, {showDue: true})}</div>
       </div>
       <div class="card" id="card-punted">
-        <div class="card-header">Repeatedly Punted (${d.punted.length})</div>
-        <div class="card-body">${ticketRows(d.punted, {showCreated: true})}</div>
+        <div class="card-header">Repeatedly Punted 2+ Sprints (${d.punted.length}) <a href="${jiraLink('labels = \\"repeatedly-punted\\"')}" target="_blank" style="font-size:11px;color:var(--blue);font-weight:400;margin-left:6px">↗ JIRA</a></div>
+        <div class="card-body">${ticketRows(d.punted, {showSprintCount: true})}</div>
       </div>
       <div class="card" id="card-never-sprint">
-        <div class="card-header">Never in a Sprint (${d.never_sprint.length}${d.never_sprint.length===20?'+':''})</div>
+        <div class="card-header">Never in a Sprint (${d.never_sprint.length}) <a href="${jiraLink('sprint is EMPTY')}" target="_blank" style="font-size:11px;color:var(--blue);font-weight:400;margin-left:6px">↗ JIRA</a></div>
         <div class="card-body">${ticketRows(d.never_sprint, {showCreated: true})}</div>
       </div>
+    </div>
+
+    <!-- Velocity -->
+    <div class="card" id="card-velocity">
+      <div class="card-header">Weekly Velocity — Opened vs Closed</div>
+      <div class="card-body" id="velocity-body"><span style="color:var(--muted)">Loading…</span></div>
     </div>
 
   `;
@@ -1738,7 +1984,7 @@ function render(d) {
   });
 }
 
-const CARD_IDS = ['card-needs-response','card-priority','card-team','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint','card-throughput','card-account-heat','card-engineer-load','card-pipeline'];
+const CARD_IDS = ['card-needs-response','card-priority','card-team','card-themes','card-age-dist','card-out-of-spec','card-due-soon','card-punted','card-never-sprint','card-velocity','card-throughput','card-account-heat','card-engineer-load','card-pipeline','card-pipeline-status'];
 const CARD_DEFAULTS = {
   'card-priority':     378,
   'card-team':         379,
@@ -1747,10 +1993,12 @@ const CARD_DEFAULTS = {
   'card-due-soon':     420,
   'card-punted':       420,
   'card-never-sprint': 420,
+  'card-velocity':     160,
   'card-throughput':   320,
   'card-account-heat': 420,
   'card-engineer-load':420,
   'card-pipeline':     300,
+  'card-pipeline-status': 420,
 };
 const STORAGE_KEY = 'ci-dash-sizes';
 
@@ -1791,14 +2039,17 @@ async function load() {
   btn.classList.add('spinning');
   btn.disabled = true;
   try {
-    const [ciResp, vmssupResp, repResp] = await Promise.all([fetch('/api/data'), fetch('/api/vmssup'), fetch('/api/reporting')]);
+    const [ciResp, vmssupResp, repResp, pipeResp] = await Promise.all([fetch('/api/data'), fetch('/api/vmssup'), fetch('/api/reporting'), fetch('/api/pipeline')]);
     ciData        = await ciResp.json();
     vmssupData    = await vmssupResp.json();
     reportingData = await repResp.json();
+    const pipeData = await pipeResp.json();
     render(ciData);
     renderVmssup(vmssupData);
     renderReporting(ciData, vmssupData, reportingData);
     updateNeedsResponseCard();
+    const pipeBody = document.getElementById('pipeline-status-body');
+    if (pipeBody) pipeBody.innerHTML = pipelineStatusHtml(pipeData.by_status || {});
     restoreSizes();
     watchSizes();
     const active = currentTab === 'ci' ? ciData : vmssupData;
